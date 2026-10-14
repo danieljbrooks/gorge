@@ -66,6 +66,28 @@ type SeatConfig struct {
 	// WithMulligan), which answers every KMulligan ask (the round is never
 	// searched). The zero value is the default bot's 1/3 coin.
 	Mulligan botpolicy.MulliganRule
+	// FullProb, CheapSims and FullProbByKind are KataGo's playout-cap
+	// randomization (pcr.go): with FullProb > 0 each searched root
+	// decision is a FULL search with probability FullProb (its kind's
+	// FullProbByKind entry when there is one), else a CHEAP one. A full
+	// search is the seat's usual one: Search.Sims (SimsByKind), root noise
+	// and visit sampling as Explore says, and it is recorded (SetRecorder).
+	// A cheap search runs CheapSims simulations with no root noise, plays
+	// the most-visited candidate and is never recorded. The draw is a pure
+	// function of the seat's seed and the decision's sequence number
+	// (PCRFull). Decisions inside a simulation (the opponent's points) are
+	// unaffected. FullProb 0 is off: every searched decision is full, the
+	// seat exactly as without these fields.
+	FullProb float64
+	// CheapSims is a cheap search's simulation budget, >= 1 whenever a
+	// decision can be cheap.
+	CheapSims int
+	// FullProbByKind overrides FullProb at a decision of a listed searched
+	// kind, by its name (KindNames, ExtraKindNames: priority, attackers,
+	// blockers, target, modes, optional, choose, multitarget -- the :kinds=
+	// names); each in [0,1], 0 making every decision of that kind cheap.
+	// Needs FullProb > 0.
+	FullProbByKind map[string]float64
 }
 
 // DefaultSeatConfig is the eval seat with the spec's knobs.
@@ -91,6 +113,9 @@ type Diag struct {
 	// came from. Diagnostic only.
 	Seed uint64
 	Seq  uint64
+	// Cheap marks a searched decision playout-cap randomization made cheap
+	// (SeatConfig.FullProb): CheapSims, no root noise, argmax, unrecorded.
+	Cheap bool
 }
 
 // Millis is the monotonic elapsed-milliseconds clock the driving command
@@ -123,6 +148,9 @@ type Seat struct {
 	// seat's decisions are answered one at a time, and every world of a
 	// decision is spent once its Search returns.
 	spare rules.Spare
+	// pcrFull and pcrCheap count the searched decisions playout-cap
+	// randomization made full and cheap (PCRCounts; 0 with it off).
+	pcrFull, pcrCheap int
 }
 
 // SetRecorder installs the visit-corpus recorder (M1b; cmd/botbench
@@ -156,6 +184,9 @@ func NewSeat(seed uint64, net *policynet.Model, cfg SeatConfig) (*Seat, error) {
 // newSeat is NewSeat before the SeatConfig.Mulligan rule.
 func newSeat(seed uint64, net *policynet.Model, cfg SeatConfig) (*Seat, error) {
 	if err := cfg.Search.Validate(net); err != nil {
+		return nil, err
+	}
+	if err := cfg.validatePCR(); err != nil {
 		return nil, err
 	}
 	switch cfg.World {
@@ -231,11 +262,9 @@ func (s *Seat) DecideSearch(ctx context.Context, env searchseat.Env, d decision.
 		t0 = Millis()
 	}
 	obs := searchprobe.NewCollector(d.Player)
-	opts := s.cfg.Search
-	if n, ok := s.cfg.SimsByKind[d.Kind]; ok && n > 0 {
-		opts.Sims = n
-	}
-	opts.Seed = DecisionSeed(s.seed, d.Seq)
+	// The budget, seed, root noise and sampling; cheap is a playout-cap
+	// cheap search (never with SeatConfig.FullProb 0).
+	opts, cheap := s.rootOptions(&d, env.Engine.G.Turn)
 	var src WorldSource
 	var redeal *RedealSource
 	if s.redeals() {
@@ -252,11 +281,6 @@ func (s *Seat) DecideSearch(ctx context.Context, env searchseat.Env, d decision.
 		}
 		src = cs
 	}
-	opts.Noise, opts.Sample = false, false
-	if s.cfg.Explore {
-		opts.Noise = !s.cfg.NoNoise
-		opts.Sample = env.Engine.G.Turn <= s.cfg.ExploreTurns
-	}
 	res, err := Search(ctx, Root{Engine: env.Engine, Decision: &d, Bot: botIn, Observer: obs}, src, s.net, opts)
 	if redeal != nil {
 		s.spare = redeal.reclaim()
@@ -271,14 +295,23 @@ func (s *Seat) DecideSearch(ctx context.Context, env searchseat.Env, d decision.
 		}
 		dealFailed = redeal.DealFailed()
 	}
-	if s.record != nil && res.Stats.Searched == 1 && res.Stats.AllFailed == 0 && refused == "" {
+	searched := res.Stats.Searched == 1
+	if searched && s.cfg.FullProb > 0 {
+		if cheap {
+			s.pcrCheap++
+		} else {
+			s.pcrFull++
+		}
+	}
+	// A cheap search only moves the game on: it is never recorded.
+	if s.record != nil && !cheap && searched && res.Stats.AllFailed == 0 && refused == "" {
 		s.record(visitRecord(env.Engine, &d, res, s.cfg.RecordFeatures, s.worldName(), opts.Sims))
 	}
 	if res.Kind != "" && Watch != nil {
 		dg := Diag{
-			Turn: env.Engine.G.Turn, Kind: res.Kind, Searched: res.Stats.Searched == 1,
+			Turn: env.Engine.G.Turn, Kind: res.Kind, Searched: searched,
 			Candidates: len(res.Candidates), Choice: res.Choice, Stats: res.Stats, Refused: refused, DealFailed: dealFailed,
-			Seed: s.seed, Seq: d.Seq,
+			Seed: s.seed, Seq: d.Seq, Cheap: cheap && searched,
 		}
 		if Millis != nil {
 			dg.MS = Millis() - t0
