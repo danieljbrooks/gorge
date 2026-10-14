@@ -504,6 +504,18 @@ func (e *Engine) mayPlayStatic(params map[string]string, id state.ObjID, you sta
 		// implements the plain permission, nothing else.
 		return false, false, false, Cost{}, false, false
 	}
+	// DraftZero patch 0009: the self-grant passes read a card's own face statics
+	// wherever the card sits (source == id). A static without EffectZone$
+	// functions only on the battlefield (CR 113.6, Forge's default), where
+	// activeStatics already reads it; off the battlefield it grants nothing.
+	// Without this, Omniscience in hand granted itself a free cast (and then
+	// every other spell); every Forge self-grant (Affected$ Card.Self) names
+	// its EffectZone$, so those are unchanged.
+	if source == id && strings.TrimSpace(params["EffectZone"]) == "" {
+		if o := e.G.Obj(id); o == nil || o.Zone != state.ZBattlefield {
+			return false, false, false, Cost{}, false, false
+		}
+	}
 	// Fail closed on gates this build cannot evaluate: the
 	// mayPlayUnreadGates family plus MayPlayPlayer$ (see
 	// mayPlayGateRejected's doc -- a recognition, not a consumption).
@@ -777,6 +789,12 @@ func (e *Engine) mayPlayAltCosts(p state.PlayerID, id state.ObjID) []mayPlayAltV
 		if i < len(bf) {
 			sv = bf[i]
 		} else if st := face[i-len(bf)]; st.Mode == "Continuous" {
+			// DraftZero patch 0009: the card's own face static functions off the
+			// battlefield only when it names its EffectZone$ (CR 113.6); otherwise
+			// Omniscience in hand offered its own free cast.
+			if strings.TrimSpace(st.Params["EffectZone"]) == "" && o.Zone != state.ZBattlefield {
+				continue
+			}
 			sv = staticView{Params: st.Params, PS: st.ParamSetOf(), Source: id, Controller: o.Controller}
 		} else {
 			continue
