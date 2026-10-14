@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/adams-shaun/gorge/decision"
+	"math"
 	"strconv"
 	"strings"
 
@@ -104,13 +105,20 @@ import (
 //	                             after decidedn= consecutive searched root values of the seat all above H, or
 //	                             all below 1-H (H in (0.5,1); bare :decided is 0.9), its full searches become
 //	                             DECIDED ones -- decidedsims= simulations, no root noise, the most-visited
-//	                             candidate -- recorded to -corpus with the training weight
+//	                             candidate, no forced= playouts -- recorded to -corpus with the training weight
 //	                             decidedw= (the record's "weight" field), until a root value leaves that side's
 //	                             band. pcr='s cheap decisions stay cheap. 0 (the default) is off
 //	   :decidedn=3               with decided=: the run of decided root values that starts it (default 3)
 //	   :decidedsims=40           with decided=: a decided search's simulations (default 40)
 //	   :decidedw=0.1             with decided=: a decided search's record weight in [0,1] (default 0.1; 1 records
 //	                             it as a full search, 0 does not record it)
+//	   :forced[=K]               forced playouts with policy target pruning (KataGo; azmcts Options.ForcedK), at
+//	                             the seat's root in full searches only (never a pcr= cheap or a decided search):
+//	                             each candidate gets at least sqrt(K * prior * root visits) visits, and the
+//	                             recorded visits (and :explore's visit sampling) are the pruned target -- every
+//	                             candidate but the most-visited gives back up to that many while its PUCT value
+//	                             stays below the most-visited's, and one left with <= 1 visit is dropped. K > 0;
+//	                             bare :forced is 2; 0 (the default) is off
 //	prior:net=gen1.gpol          the network's policy alone: the argmax of its prior over the
 //	                             candidates the search would build, no simulation
 //	az:sims=100:remote=unix:/tmp/dzg.sock
@@ -146,6 +154,7 @@ type policySpec struct {
 	DecidedN  int                   // decidedn=N: the run of decided root values that starts them
 	DecSims   int                   // decidedsims=N: a decided search's simulations
 	DecW      float64               // decidedw=W: a decided search's record weight
+	Forced    float64               // forced=K: forced playouts with policy target pruning; 0 is off
 	OppNodes  bool
 	SkipPass  int
 	OppFull   bool         // :oppfull
@@ -256,6 +265,8 @@ func parsePolicy(s string) (*policySpec, error) {
 		case "decidedw":
 			decSet.w = true
 			p.DecW, err = strconv.ParseFloat(v, 64)
+		case "forced":
+			p.Forced, err = floatOr(v, defaultForcedK)
 		case "oppnodes":
 			p.OppNodes = true
 		case "oppfull":
@@ -315,6 +326,9 @@ func parsePolicy(s string) (*policySpec, error) {
 		return nil, fmt.Errorf("policy %q: %w", s, err)
 	}
 	if err := p.checkDecided(decSet); err != nil {
+		return nil, fmt.Errorf("policy %q: %w", s, err)
+	}
+	if err := p.checkForced(); err != nil {
 		return nil, fmt.Errorf("policy %q: %w", s, err)
 	}
 	if p.Kind == "az" || p.Kind == "prior" {
@@ -380,12 +394,13 @@ func (p *policySpec) checkPCR(cheapSet bool) error {
 
 // The decided-game keys' defaults (research memo D7, KataGo's 0.9 for 3 moves and weight 0.1):
 // bare :decided's threshold, the run that starts it, a decided search's simulations and its
-// record weight.
+// record weight; and bare :forced's k (KataGo's 2).
 const (
 	defaultDecided       = 0.9
 	defaultDecidedN      = 3
 	defaultDecidedSims   = 40
 	defaultDecidedWeight = 0.1
+	defaultForcedK       = 2.0
 )
 
 // decidedKeys records which of decidedn=, decidedsims= and decidedw= a spec set.
@@ -431,6 +446,19 @@ func (p *policySpec) checkDecided(set decidedKeys) error {
 	return nil
 }
 
+// checkForced checks forced= (az only, finite and >= 0; 0 is off).
+func (p *policySpec) checkForced() error {
+	switch {
+	case p.Forced == 0:
+		return nil
+	case p.Kind != "az":
+		return fmt.Errorf("forced= is an az key")
+	case !(p.Forced > 0) || math.IsInf(p.Forced, 1):
+		return fmt.Errorf("forced=%g: want a finite k > 0 (0 is off)", p.Forced)
+	}
+	return nil
+}
+
 // recordFeatures is the encoding visit corpora are written in (play -record-features).
 var recordFeatures = policynet.FeaturesMZ
 
@@ -463,6 +491,7 @@ func (p *policySpec) azConfig() azmcts.SeatConfig {
 	cfg.SimsByKind = p.KSims
 	cfg.FullProb, cfg.CheapSims, cfg.FullProbByKind = p.PCR, p.Cheap, p.PCRK
 	cfg.DecidedHigh, cfg.DecidedN, cfg.DecidedSims, cfg.DecidedWeight = p.Decided, p.DecidedN, p.DecSims, p.DecW
+	cfg.Search.ForcedK = p.Forced
 	cfg.Search.OpponentNodes = p.OppNodes
 	cfg.Search.SkipPass = p.SkipPass
 	cfg.Search.OpponentMirror = p.OppFull

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 
 	"github.com/adams-shaun/gorge/decision"
@@ -58,6 +59,11 @@ type Result struct {
 	Choice     int
 	Intent     decision.Intent // the answer to play
 	Stats      Stats
+	// Target, parallel to Visits, is the policy target after forced-playout
+	// pruning (Options.ForcedK, forced.go): the visits the seat records and,
+	// under Sample, draws the move from. nil with ForcedK 0, or when no
+	// simulation completed.
+	Target []int
 }
 
 // RootRow is one root child of a Search: its semantic key, a
@@ -129,6 +135,8 @@ func (o Options) Validate(net *policynet.Model) error {
 		return fmt.Errorf("azmcts: unknown discount unit %d", o.DiscountUnit)
 	case o.AbsoluteUnvisitedQ && (o.UnvisitedQ < 0 || o.UnvisitedQ > 1 || o.UnvisitedQ != o.UnvisitedQ):
 		return fmt.Errorf("azmcts: unvisited Q %g must be in [0,1]", o.UnvisitedQ)
+	case !(o.ForcedK >= 0) || math.IsInf(o.ForcedK, 1):
+		return fmt.Errorf("azmcts: forced-playout k %g must be finite and >= 0 (0 is off)", o.ForcedK)
 	}
 	if net != nil {
 		if !net.HasValue() {
@@ -253,6 +261,9 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 		return res, errors.New("azmcts: Search needs a world source")
 	}
 	res.Stats.Searched = 1
+	if opts.ForcedK > 0 {
+		res.Stats.ForcedSearched = 1
+	}
 	countSearched(&res.Stats, kind)
 	rng := rand.New(rand.NewPCG(opts.Seed, opts.Seed^0x9e3779b97f4a7c15))
 	treePrior := prior
@@ -305,7 +316,14 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 		res.Stats.AllFailed = 1
 		return res, nil
 	}
-	res.Choice = choose(res.Visits, opts.Sample, rng)
+	played := res.Visits
+	if opts.ForcedK > 0 {
+		// The argmax is unchanged by the pruning; a sampled move is drawn from
+		// the pruned target, as KataGo plays from its pruned visits.
+		res.Target = pruneTarget(res.Visits, res.Q, res.Avail, treePrior, opts, &res.Stats)
+		played = res.Target
+	}
+	res.Choice = choose(played, opts.Sample, rng)
 	if res.Choice != 0 || !botFound {
 		res.Intent = cands[res.Choice].in
 	}
