@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -131,6 +132,9 @@ func runPlay(args []string) int {
 	poolPath := fs.String("pool", "", "pool.tsv (gorge/decks.py)")
 	split := fs.String("split", "eval", "pool split the decks come from: train, eval or all")
 	onlyPath := fs.String("only", "", "optional list of allowed decks (dzgorge coverage -out)")
+	deckFile := fs.String("deckfile", "", "JSONL of gorge deck files (one {name, cards} object a line), looked up before -decks")
+	pairsFile := fs.String("pairs-file", "", "TSV of explicit deck pairs (deckA, deckB[, seed]) instead of random pairs from -pool; "+
+		"-first-pair/-pairs select a range of its lines (-pairs 0: all)")
 	aSpec := fs.String("a", "bot", "policy A (see policy.go)")
 	bSpec := fs.String("b", "bot", "policy B")
 	pairs := fs.Int("pairs", 100, "deck pairs; each is played twice (policies swapped) unless -a == -b or -single")
@@ -162,6 +166,12 @@ func runPlay(args []string) int {
 	beliefPool := fs.String("belief-pool", "", "a :closedlist seat's belief corpus: pool.tsv (default -pool)")
 	beliefSplit := fs.String("belief-split", "train", "a :closedlist seat's belief corpus: the pool split its decks come from")
 	pprofAddr := fs.String("pprof", "", "serve net/http/pprof at this address (e.g. 127.0.0.1:6060); diagnostic only")
+	fs.IntVar(&azmcts.PriorRankMaxOptions, "topk-max-options", 0, "under topk=, skip the network's ranking at a "+
+		"decision with more options than this (bot answer first, enumeration order, uniform prior); 0 = always rank")
+	fs.StringVar(&auditOracle, "audit-oracle", "", "audit side A's az seat: this az spec searches a share of its decisions "+
+		"first (audit.go); needs -audit-out")
+	fs.Float64Var(&auditRate, "audit-rate", 0.1, "share of side A's searched decisions the oracle audits")
+	fs.StringVar(&auditPath, "audit-out", "", "audit JSONL (one line per audited decision)")
 	fs.Parse(args)
 	tuneGC()
 	if *pprofAddr != "" {
@@ -172,6 +182,19 @@ func runPlay(args []string) int {
 				fmt.Fprintln(os.Stderr, "play: -pprof:", err)
 			}
 		}()
+	}
+	if auditOracle != "" {
+		sp, err := parsePolicy(auditOracle)
+		if err != nil || sp.Kind != "az" || auditPath == "" {
+			fmt.Fprintf(os.Stderr, "play: -audit-oracle %q needs an az spec and -audit-out (%v)\n", auditOracle, err)
+			return 2
+		}
+		if auditW, err = newAuditWriter(auditPath); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		defer auditW.close()
+		auditSpec = sp
 	}
 	if f, err := policynet.ParseFeatureSet(*recFeat); err != nil || f.Diagnostic() {
 		fmt.Fprintf(os.Stderr, "play: -record-features %q: want mz or entity\n", *recFeat)
@@ -226,10 +249,22 @@ func runPlay(args []string) int {
 			p.setBelief(b)
 		}
 	}
-	pool, err := readPool(*poolPath, *split)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+	var explicit [][3]string
+	if *pairsFile != "" {
+		if explicit, err = readPairs(*pairsFile); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if *pairs <= 0 || *firstPair+*pairs > len(explicit) {
+			*pairs = len(explicit) - *firstPair
+		}
+	}
+	var pool []poolDeck
+	if *pairsFile == "" {
+		if pool, err = readPool(*poolPath, *split); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
 	}
 	if *onlyPath != "" {
 		raw, err := os.ReadFile(*onlyPath)
@@ -249,7 +284,7 @@ func runPlay(args []string) int {
 		}
 		pool = kept
 	}
-	if len(pool) < 2 {
+	if *pairsFile == "" && len(pool) < 2 {
 		fmt.Fprintf(os.Stderr, "play: %d decks in split %q\n", len(pool), *split)
 		return 1
 	}
@@ -261,14 +296,28 @@ func runPlay(args []string) int {
 	var jobs []job
 	for p := *firstPair; p < *firstPair+*pairs; p++ {
 		r := rand.New(rand.NewPCG(*seed, uint64(p)))
-		i := r.IntN(len(pool))
-		j := r.IntN(len(pool) - 1)
-		if j >= i {
-			j++
+		var dk [2]string
+		var ps uint64
+		if explicit != nil {
+			dk = [2]string{explicit[p][0], explicit[p][1]}
+			ps = r.Uint64()
+			if explicit[p][2] != "" {
+				if ps, err = strconv.ParseUint(explicit[p][2], 10, 64); err != nil {
+					fmt.Fprintf(os.Stderr, "play: -pairs-file line %d: seed %q: %v\n", p+1, explicit[p][2], err)
+					return 2
+				}
+			}
+		} else {
+			i := r.IntN(len(pool))
+			j := r.IntN(len(pool) - 1)
+			if j >= i {
+				j++
+			}
+			dk = [2]string{pool[i].Name, pool[j].Name}
+			ps = r.Uint64()
 		}
-		ps := r.Uint64()
 		for leg := 0; leg < legs; leg++ {
-			jb := job{game: len(jobs), pair: p, leg: leg, seed: ps, decks: [2]string{pool[i].Name, pool[j].Name}, sides: [2]int{0, 1}}
+			jb := job{game: len(jobs), pair: p, leg: leg, seed: ps, decks: dk, sides: [2]int{0, 1}}
 			if leg == 1 {
 				jb.sides = [2]int{1, 0}
 			}
@@ -276,6 +325,12 @@ func runPlay(args []string) int {
 		}
 	}
 	dc := &deckCache{reg: reg, dir: *decksDir, m: map[string][]*cards.Card{}, names: map[*cards.Card]string{}}
+	if *deckFile != "" {
+		if dc.files, err = readDeckFile(*deckFile); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
 	for _, jb := range jobs {
 		for _, d := range jb.decks {
 			if _, err := dc.get(d); err != nil {
@@ -370,6 +425,9 @@ func runPlay(args []string) int {
 					next++
 					w.Write(f.line)
 					w.WriteByte('\n')
+					// Flush each game: a run killed for a hung game keeps every game finished before it, so the
+					// caller can find the hung one (the first missing) instead of losing a buffer's worth.
+					w.Flush()
 					if f.member != nil {
 						if _, err := corpusF.Write(f.member); err != nil {
 							panic(err)
@@ -535,6 +593,14 @@ func playOne(jb job, specs []*policySpec, dc *deckCache, reg *cards.Registry, ma
 		if err != nil {
 			rec.Result, rec.Err = "error", err.Error()
 			return rec, nil
+		}
+		if az, ok := st.(*azmcts.Seat); ok && auditSpec != nil && jb.sides[s] == 0 && sp.Kind == "az" {
+			ost, err := auditSpec.seat(jb.seed ^ uint64(s+1) ^ 0x0a0d17)
+			if err != nil {
+				rec.Result, rec.Err = "error", err.Error()
+				return rec, nil
+			}
+			st = newAuditSeat(az, ost.(*azmcts.Seat), jb.seed^uint64(s+1), jb.pair, jb.leg, s)
 		}
 		seats[s] = st
 		if sp.searches() {
