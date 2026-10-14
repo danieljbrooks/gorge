@@ -150,6 +150,7 @@ var (
 	_ bots.EnvSeat              = (*hostedSeat)(nil)
 	_ bots.BudgetedSeat         = (*hostedSeat)(nil)
 	_ seat.BoardSeat            = (*hostedSeat)(nil)
+	_ seat.PaymentPlanConsumer  = (*hostedSeat)(nil)
 	_ searchseat.SearchSeat     = (*hostedSeat)(nil)
 	_ searchseat.ClosedListSeat = (*hostedSeat)(nil)
 )
@@ -182,6 +183,16 @@ func (s *hostedSeat) SearchBelief() *searchprobe.Belief {
 		return c.SearchBelief()
 	}
 	return nil
+}
+
+// WantsPaymentActions forwards the wrapped seat's payment-plan opt-in
+// (seat.PaymentPlanConsumer). A delegate without one is a consumer: bots
+// default to receiving plans (seat.PaymentPlanConsumer's contract).
+func (s *hostedSeat) WantsPaymentActions() bool {
+	if c, ok := s.bot.(seat.PaymentPlanConsumer); ok {
+		return c.WantsPaymentActions()
+	}
+	return true
 }
 
 // DecideSearch keeps this adapter usable by botbench's engine-owning driver.

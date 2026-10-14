@@ -12,8 +12,8 @@ import (
 )
 
 // planEnvSeat answers its priority decisions with a payment plan chosen on
-// the honest root (the az seats' shape: they plan payments on their own root
-// and are not PaymentPlanConsumers, so the driver never builds the plans on
+// the honest root (a seat that plans payments on its own root and opts out
+// of PaymentPlanConsumer, so the driver never builds the plans on
 // the live decision for them). It counts the plan answers and the Env
 // decisions that arrived with no feed after one -- a feed the driver stopped.
 type planEnvSeat struct {

@@ -311,7 +311,21 @@ func (s *Seat) DecideSearch(ctx context.Context, env searchseat.Env, d decision.
 		}
 		src = cs
 	}
-	res, err := Search(ctx, Root{Engine: env.Engine, Decision: &d, Bot: botIn, Observer: obs}, src, s.net, opts)
+	root := Root{Engine: env.Engine, Decision: &d, Bot: botIn, Observer: obs}
+	// The tap backstop: under AutoPayment a bot answer that taps mana by hand
+	// is outside the payment vocabulary, and the ordinary root would skip the
+	// decision (SkipFewCandidates) and play the tap unsearched -- the
+	// counterspell windows az never learned. Search the full vocabulary with
+	// no bot candidate instead (Root.NoBot); every failure path still plays
+	// the bot's tap. Stats.BotTapRerooted counts it.
+	tapReroot := opts.AutoPayment && d.Kind == decision.KPriority && priorityBase(&d, botIn) == BaseActivate
+	if tapReroot {
+		root.NoBot = true
+	}
+	res, err := Search(ctx, root, src, s.net, opts)
+	if tapReroot && res.Stats.Searched == 1 {
+		res.Stats.BotTapRerooted = 1
+	}
 	if redeal != nil {
 		s.spare = redeal.reclaim()
 	}
@@ -365,6 +379,14 @@ func (s *Seat) DecideSearch(ctx context.Context, env searchseat.Env, d decision.
 	}
 	return res.Intent, nil
 }
+
+// WantsPaymentActions reports whether the driver must build the decision's
+// payment plans for this seat (seat.PaymentPlanConsumer): exactly when the
+// search runs over the auto-payment vocabulary (SeatConfig.Search.AutoPayment).
+// Without plans the wrapped auto-pay bot answers with a manual mana tap, which
+// is outside that vocabulary, so the decision would go unsearched. A seat
+// without AutoPayment searches the manual options and opts out.
+func (s *Seat) WantsPaymentActions() bool { return s.cfg.Search.AutoPayment }
 
 // DigestFree reports that the seat never samples from its feed's history
 // (searchseat.DigestFree): both world sources -- the injected clairvoyant

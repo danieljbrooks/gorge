@@ -129,6 +129,12 @@ func NewSearchBot(seed uint64, opts Options) *SearchBot {
 	return &SearchBot{def: seat.NewBot(seed), opts: opts}
 }
 
+// WantsPaymentActions is an explicit opt-out (seat.PaymentPlanConsumer):
+// the teacher searches the decision's manual option list over a manual-tap
+// default bot (seat.NewBot), so neither ever reads a payment plan; building
+// them would only cost time.
+func (s *SearchBot) WantsPaymentActions() bool { return false }
+
 // Decide is the plain Seat half: the wrapped bot. It exists for callers that
 // hold the seat only as a Seat; the driver's search path goes through
 // DecideSearch/DecideBoard.

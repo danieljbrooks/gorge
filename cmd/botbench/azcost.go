@@ -296,6 +296,9 @@ func azCostReport(totalGames int) string {
 	fmt.Fprintf(&b, "counters: simulations %d, completed %d, chance-failures %d, panics %d, submit-errors %d, bad-worlds %d, no-world %d, all-failed %d, step-capped %d, terminal %d, expanded %d, unavailable %d, prior-fallbacks %d, skipped %d, feed-stopped %d, redeal-refused %d\n",
 		total.Simulations, total.Completed, total.ChanceFailures, total.Panics, total.SubmitErrors, total.BadWorlds, total.NoWorld,
 		total.AllFailed, total.StepCapped, total.Terminal, total.Expanded, total.Unavailable, total.PriorFallbacks, total.Skipped, total.FeedStopped, total.RedealRefused)
+	if total.BotTapRerooted > 0 {
+		fmt.Fprintf(&b, "tap-rerooted %d (bot answered a manual mana tap under auto-payment; searched with no bot candidate)\n", total.BotTapRerooted)
+	}
 	if total.RedealRefused > 0 || total.NoWorld > 0 {
 		var reasons []string
 		count := make(map[string]int)

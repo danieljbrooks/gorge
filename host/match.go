@@ -918,8 +918,8 @@ func (r *Registry) play(ctx context.Context, t *table, m *match) (final string) 
 					// A payment-plan answer (in.Payment / in.Announce) names
 					// one of the decision's PaymentActions, which the engine
 					// builds lazily -- Submit builds them to validate it. A
-					// seat that is not a PaymentPlanConsumer (the az seats,
-					// which plan payments on their own root) leaves them
+					// seat that opts out of PaymentPlanConsumer (az-redeal's
+					// manual config, or a test seat) leaves them
 					// unbuilt on the live decision, so the copy recorded on
 					// the feed could not translate the answer and the feed
 					// stopped for the rest of the game. Build them first: a

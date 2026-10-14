@@ -371,8 +371,8 @@ func PlayGame(cfg rules.Config, seats []seat.Seat, maxTurns, maxIntents int, hoo
 				if err == nil && fd != nil {
 					// A payment-plan answer names one of the decision's
 					// PaymentActions, which the engine builds lazily; a seat
-					// that is not a PaymentPlanConsumer (the az seats plan on
-					// their own root) leaves them unbuilt here, the answer
+					// that opts out of PaymentPlanConsumer (az-redeal's manual
+					// config, or a test seat) leaves them unbuilt here, the answer
 					// would not translate and the feed would stop for the
 					// rest of the game -- the hosted fix of 964bab2f7
 					// (host/match.go). A pure derived read: no event, no RNG.

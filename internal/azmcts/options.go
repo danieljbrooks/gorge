@@ -345,6 +345,13 @@ type Stats struct {
 	// additive -- FeedStopped keeps counting every routed-around decision --
 	// so a true feed stop is FeedStopped - RootRefused.
 	RootRefused int
+	// BotTapRerooted counts searched priority decisions whose bot answer
+	// under AutoPayment was a manual mana tap (outside the payment
+	// vocabulary): Seat.DecideSearch searched the full vocabulary with no bot
+	// candidate (Root.NoBot) instead of playing the tap unsearched. Nonzero
+	// means a seat reached a decision without payment plans built or its
+	// bot preferred tapping by hand; near zero is healthy.
+	BotTapRerooted int
 	// Livelocks counts simulations whose world tripped the engine's
 	// livelock contract (*rules.LivelockError: the token-plan mint cap, the
 	// runaway watchers) -- an unrepresentable game the bench ends as a
@@ -550,6 +557,7 @@ func (s *Stats) Add(o Stats) {
 	s.FeedStopped += o.FeedStopped
 	s.RedealRefused += o.RedealRefused
 	s.RootRefused += o.RootRefused
+	s.BotTapRerooted += o.BotTapRerooted
 	s.Livelocks += o.Livelocks
 	s.DeadlineHits += o.DeadlineHits
 	s.OppPoints += o.OppPoints

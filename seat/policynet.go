@@ -440,6 +440,11 @@ func (b *PolicyNetBot) encode(v view.View, d *decision.Decision) (policynet.Stat
 	return st, opts, true
 }
 
+// WantsPaymentActions is an explicit opt-out (PaymentPlanConsumer): the
+// network scores the decision's manual option list only, so a payment plan
+// would never be read.
+func (b *PolicyNetBot) WantsPaymentActions() bool { return false }
+
 // Decide answers d: the selected scored kinds above, the default bot for
 // everything else. For a scored kind the wrapped default bot is asked FIRST
 // (its answer marks the residual prior's BotPick, gates a priority decision

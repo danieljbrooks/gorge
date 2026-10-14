@@ -653,7 +653,10 @@ func TestNameKeysOfASetIgnoreTheBotsOrder(t *testing.T) {
 // redealt worlds with no failed simulation, replays exactly, searches fuller
 // kinds at its own decisions and records them.
 func TestSeatWithFullerKindsPlaysAndReplays(t *testing.T) {
-	cfg := testConfig(t, "foundations-calling-all-angels", "foundations-keen-engineering", testSeed)
+	// testSeed+4: since the az seat consumes payment plans (2026-10-14) the
+	// testSeed game no longer meets a fuller kind at its own root; +4 meets
+	// three of them.
+	cfg := testConfig(t, "foundations-calling-all-angels", "foundations-keen-engineering", testSeed+4)
 	sc := DefaultSeatConfig()
 	sc.Search.Sims, sc.World = 8, WorldRedeal
 	sc.Search.Kinds, sc.Search.OpponentNodes, sc.Search.OpponentMirror, sc.Search.AutoPayment = FullKinds(), true, true, true

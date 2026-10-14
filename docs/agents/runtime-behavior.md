@@ -64,6 +64,25 @@ because the outcome is already recorded and an error cannot un-record it, so
 an embedder that persists through `OnMatchEnd` must handle its own
 persistence failures inside the callback.
 
+## Payment plans for bot seats
+
+A driver (`internal/bench.PlayGame`, `host/match.go`, cmd tools) builds a
+decision's mana-payment plans (`Engine.EnsurePaymentActions`) only for a
+seat that implements `seat.PaymentPlanConsumer` and answers true. Bots
+default to true; a wrapper forwards to what it wraps. Without plans the
+auto-pay bot falls back to a manual mana tap, and once mana floats the
+engine withholds plans for the rest of the window, so a search seat that
+asks its bot first (`azmcts.Seat.DecideSearch`) never searched those
+windows. The opt-outs are bots whose policy reads only the manual option
+list (manual-mana `seat.Bot`, `PolicyNetBot`, the searchteacher seat,
+generation-0 `az-redeal`), each named with its reason in
+`bots/all/payment_default_test.go`, which fails the build on any other
+registered bot answering false. As a backstop, an AutoPayment az seat whose
+bot still answers a mana tap searches the full payment vocabulary with no
+bot candidate (`Root.NoBot`) and counts `Stats.BotTapRerooted`
+(botbench's `tap-rerooted` line). Human seats are unchanged: the host builds
+their plans under `TableConfig.AutoMana` and the client only picks.
+
 ## Seat-privacy boundary
 
 A seat credential names **both its table and seat**. Every current

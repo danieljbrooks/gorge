@@ -110,3 +110,8 @@ so most of these hurt someone other than you.
 - **Don't commit neural checkpoints (`.gpol`)** without an operator decision.
   Small JSON weight profiles may be committed.
 - **Don't read a 200-game bench as a verdict.** Its CI is about ±7pp.
+- **Don't seat a bot that doesn't consume payment plans.** A bot seat that
+  is not a `seat.PaymentPlanConsumer` answering true silently plays its
+  fallback's manual mana taps; az lost 89% of its counterspell windows this
+  way (2026-10-14). Bots default to true; an opt-out needs a stated reason in
+  `bots/all`'s `paymentOptOut`.

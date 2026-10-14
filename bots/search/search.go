@@ -106,6 +106,15 @@ func (s *hostedSeat) DecideBoard(ctx context.Context, b botpolicy.Board, d decis
 	return s.bot.DecideBoard(ctx, b, d)
 }
 
+// WantsPaymentActions forwards the wrapped seat's payment-plan answer; a
+// delegate without one is a consumer (bots default to plans).
+func (s *hostedSeat) WantsPaymentActions() bool {
+	if c, ok := s.bot.(seat.PaymentPlanConsumer); ok {
+		return c.WantsPaymentActions()
+	}
+	return true
+}
+
 // DecideSearch keeps the hosted adapter usable by botbench's engine-owning driver.
 func (s *hostedSeat) DecideSearch(ctx context.Context, env searchseat.Env, d decision.Decision) (decision.Intent, error) {
 	return s.bot.DecideSearch(ctx, env, d)
