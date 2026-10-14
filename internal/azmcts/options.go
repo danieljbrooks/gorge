@@ -143,6 +143,31 @@ type Options struct {
 	// cache off. It never changes the Result, only its cost counters, and a
 	// source whose worlds differ between simulations never uses it.
 	NodeCache int
+	// OpponentNodes puts the opponent in the tree. Off (the default), the
+	// walk's bot answers every decision of every other seat, so the search
+	// computes a best response to that bot. On, an in-walk decision of
+	// another seat that is a searched kind (Kinds) with at least two
+	// candidates -- built by the same enumerators, the walk bot's own
+	// answer for that seat first, capped at Limit -- is a tree point too.
+	// Every stored value stays the searching seat's win probability; at an
+	// opponent's point selection maximises the opponent's, 1 - Q, and
+	// first-play urgency reads the parent from that side. The prior there
+	// is the network's on the OPPONENT's redacted view of the world
+	// (uniform without one, or under UniformPrior). The leaf and the backup
+	// are unchanged.
+	//
+	// An opponent's candidate keys name every object by its card name (the
+	// NameKeys rule with nothing known at the root): its hand is re-dealt in
+	// every world, so an observer-local reference would not name the same
+	// card twice, and two same-named objects share one key (one candidate
+	// is kept). Its keys carry oppKeyPrefix, so they never meet the
+	// searching seat's at a node two worlds reach with different seats to
+	// act; the other seat's children are unavailable there. The opponent
+	// enumerates the manual-payment vocabulary even under AutoPayment: its
+	// walk bot is the manual one, whose casts are offered only once mana
+	// floats (a tap is never a candidate, so such a priority stays the
+	// bot's).
+	OpponentNodes bool
 }
 
 // DiscountUnit is what one step of the backup discount counts.
@@ -155,7 +180,8 @@ const (
 	DiscountPly DiscountUnit = iota
 	// DiscountAction counts searched tree edges between the node and the
 	// leaf (upstream's "logical action": only edges out of the searching
-	// seat's searched decisions).
+	// seat's searched decisions, and under OpponentNodes out of the
+	// opponent's points too: every tree edge).
 	DiscountAction
 	// DiscountTurn counts turn boundaries crossed between the node and the
 	// leaf.
@@ -217,9 +243,10 @@ type Stats struct {
 	PriorFallbacks int // network priors that fell back to uniform, at the root and at in-walk points (a discarded simulation's included)
 	FeedStopped    int // decisions the driver routed around the search (its observation feed stopped): the bot's answer was played
 	RedealRefused  int // decisions whose honest (redeal) world source refused to prepare: no world, the bot's answer was played
-	// Truncated counts searched points -- the root and in-walk decisions,
-	// a discarded simulation's included -- whose candidate list the Limit
-	// cut; RootTruncated is the root's share (0 or 1 per Search).
+	// Truncated counts searched points -- the root and in-walk decisions
+	// (an opponent's too, under OpponentNodes), a discarded simulation's
+	// included -- whose candidate list the Limit cut; RootTruncated is the
+	// root's share (0 or 1 per Search).
 	Truncated     int
 	RootTruncated int
 	// LeafPlies, LeafEdges and LeafTurns sum, over completed simulations,
@@ -234,6 +261,13 @@ type Stats struct {
 	// or became done between simulations, the tree stopped where it was and
 	// the bot's answer was played. A live context never counts it.
 	DeadlineHits int
+	// OppPoints and OppExpanded are Options.OpponentNodes at work:
+	// OppPoints counts the selections simulations made at an opponent's
+	// point (one per visit, a discarded simulation's included), OppExpanded
+	// the new tree nodes that are an opponent's point (Expanded's share).
+	// Both stay 0 with the option off.
+	OppPoints   int
+	OppExpanded int
 
 	// The walk's cost counters. They count work, not outcomes: the node
 	// cache (Options.NodeCache) changes them, and EnvSteps above, and
@@ -349,6 +383,8 @@ func (s *Stats) Add(o Stats) {
 	s.FeedStopped += o.FeedStopped
 	s.RedealRefused += o.RedealRefused
 	s.DeadlineHits += o.DeadlineHits
+	s.OppPoints += o.OppPoints
+	s.OppExpanded += o.OppExpanded
 	s.Truncated += o.Truncated
 	s.RootTruncated += o.RootTruncated
 	s.LeafPlies += o.LeafPlies

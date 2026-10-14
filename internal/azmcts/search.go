@@ -10,6 +10,7 @@ import (
 	"github.com/adams-shaun/gorge/internal/policynet"
 	"github.com/adams-shaun/gorge/internal/searchprobe"
 	"github.com/adams-shaun/gorge/rules"
+	"github.com/adams-shaun/gorge/state"
 )
 
 // Root is the real decision being searched.
@@ -253,6 +254,15 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 		nameKeys: opts.NameKeys, rootRefs: root.Observer.Introduced(),
 		root: rootPt, rootCands: cands, rootDec: root.Decision, stats: &res.Stats,
 		envBoard: &envBoard, enumBoard: &enumBoard, views: views,
+	}
+	if opts.OpponentNodes {
+		cfg.oppNodes = true
+		cfg.oppForks = make([]*searchprobe.Forker, len(root.Engine.G.Players))
+		for p := range cfg.oppForks {
+			if pl := state.PlayerID(p); pl != cfg.actor {
+				cfg.oppForks[p] = searchprobe.NewCollector(pl).Forker()
+			}
+		}
 	}
 	var envs EnvSource = &worldEnvs{src: src, cfg: cfg}
 	if opts.NodeCache > 0 && isFixed(src) {
