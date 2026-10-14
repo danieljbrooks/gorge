@@ -57,6 +57,11 @@ type Point struct {
 	// before PriorTopKBefore.
 	ranked bool
 	before int
+	// extra and oppPay are, likewise, countPoint's: extra is a fuller
+	// kind's ExtraKindNames index plus one (0 for any other kind), oppPay
+	// an opponent's payment-vocabulary point.
+	extra  int8
+	oppPay bool
 }
 
 // Leaf is the value of the position a walk stopped at, for the searching

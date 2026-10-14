@@ -117,8 +117,10 @@ func (o Options) Validate(net *policynet.Model) error {
 	case o.PriorTopK < 0 || o.PriorTopK == 1:
 		// One kept candidate is the bot's alone: nothing would be searched.
 		return fmt.Errorf("azmcts: prior top-k %d must be 0 (off) or >= 2", o.PriorTopK)
-	case o.Kinds == (Kinds{}):
+	case !o.Kinds.any():
 		return errors.New("azmcts: no searched decision kinds")
+	case o.OpponentMirror && !o.OpponentNodes:
+		return errors.New("azmcts: OpponentMirror needs OpponentNodes (the opponent's points it mirrors)")
 	case o.Discount < 0 || o.Discount > 1 || o.Discount != o.Discount:
 		return fmt.Errorf("azmcts: discount %g must be in [0,1] (0 and 1 are off)", o.Discount)
 	case int(o.DiscountUnit) >= len(DiscountUnitNames):
@@ -196,7 +198,13 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 	if topK > 0 {
 		limit = BenchCandidateLimit
 	}
-	cands, kind, why, ok, cut, botFound := rootCands(root.Observer, root, opts.Kinds, limit, opts.AutoPayment, &enumBoard)
+	// Choose searches a KChoose list of at most Options.Limit options, at
+	// the root and in the walk, whatever the enumeration cap.
+	kinds := opts.Kinds
+	if kinds.Choose {
+		kinds.chooseMax = opts.Limit
+	}
+	cands, kind, why, ok, cut, botFound := rootCands(root.Observer, root, kinds, limit, opts.AutoPayment, &enumBoard)
 	res.Kind = kind
 	if cut {
 		res.Stats.Truncated, res.Stats.RootTruncated = 1, 1
@@ -208,6 +216,9 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 			if k == KindPriority {
 				res.Stats.PrioritySkipped[priorityBase(root.Decision, root.Bot)][why]++
 			}
+		} else if x := extraIndex(kind); x >= 0 {
+			res.Stats.Skipped = 1
+			res.Stats.ExtraSkipped[x][why]++
 		}
 		return res, nil
 	}
@@ -240,7 +251,7 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 		return res, errors.New("azmcts: Search needs a world source")
 	}
 	res.Stats.Searched = 1
-	res.Stats.KindSearched[kindIndex(kind)]++
+	countSearched(&res.Stats, kind)
 	rng := rand.New(rand.NewPCG(opts.Seed, opts.Seed^0x9e3779b97f4a7c15))
 	treePrior := prior
 	if opts.Noise {
@@ -248,7 +259,7 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 	}
 	rootPt := &Point{Keys: res.Keys, Prior: treePrior}
 	cfg := &walkConfig{
-		net: net, heuristicLeaf: opts.HeuristicLeaf, kinds: opts.Kinds, limit: opts.Limit, priorTopK: topK, maxSteps: opts.MaxSteps,
+		net: net, heuristicLeaf: opts.HeuristicLeaf, kinds: kinds, limit: opts.Limit, priorTopK: topK, maxSteps: opts.MaxSteps,
 		envSeed: splitmix(opts.Seed ^ 0x656e762d73656564), actor: root.Decision.Player, autoPayment: opts.AutoPayment,
 		uniformPrior: opts.UniformPrior, rootPerWorld: opts.RootPerWorld,
 		nameKeys: opts.NameKeys, rootRefs: root.Observer.Introduced(),
@@ -257,6 +268,9 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 	}
 	if opts.OpponentNodes {
 		cfg.oppNodes = true
+		if opts.OpponentMirror {
+			cfg.oppAutoPay, cfg.oppTopK = opts.AutoPayment, topK
+		}
 		cfg.oppForks = make([]*searchprobe.Forker, len(root.Engine.G.Players))
 		for p := range cfg.oppForks {
 			if pl := state.PlayerID(p); pl != cfg.actor {

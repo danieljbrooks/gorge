@@ -68,7 +68,7 @@ func DefaultSeatConfig() SeatConfig {
 // Diag is one decision of a searched kind as the cost report sees it.
 type Diag struct {
 	Turn       int32
-	Kind       string // priority, attackers, blockers, target; "" for a FeedStopped record
+	Kind       string // priority, attackers, blockers, target (or a fuller kind, ExtraKindNames); "" for a FeedStopped record
 	Searched   bool   // a tree was built
 	Candidates int
 	Choice     int

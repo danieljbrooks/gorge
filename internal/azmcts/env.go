@@ -68,6 +68,13 @@ type walkConfig struct {
 	// the redeal source's forker does for the searching seat.
 	oppNodes bool
 	oppForks []*searchprobe.Forker
+	// oppAutoPay is OpponentMirror with AutoPayment: the other seats' walk
+	// bots pay automatically (engineEnv.oppBots) and their priority points
+	// enumerate the payment vocabulary, as the searching seat's do. oppTopK
+	// is the PriorTopK in effect at their points: priorTopK under
+	// OpponentMirror, 0 otherwise (oppEnumLimit).
+	oppAutoPay bool
+	oppTopK    int
 }
 
 // priorNet is the network in-walk priors read: nil under uniformPrior.
@@ -125,6 +132,15 @@ func (c *walkConfig) priorView() *view.View {
 // rankedPrior to cut.
 func (c *walkConfig) enumLimit() int {
 	if c.priorTopK > 0 {
+		return BenchCandidateLimit
+	}
+	return c.limit
+}
+
+// oppEnumLimit is enumLimit at an opponent's point (Options.OpponentNodes):
+// limit, or under oppTopK every candidate.
+func (c *walkConfig) oppEnumLimit() int {
+	if c.oppTopK > 0 {
 		return BenchCandidateLimit
 	}
 	return c.limit
@@ -197,6 +213,13 @@ type engineEnv struct {
 	// name nothing across worlds, and opponent keys name objects by card
 	// name instead (oppPoint). Nil until used.
 	oppObs []*searchprobe.Collector
+	// oppBots[p] answers seat p's decisions under oppAutoPay: the auto-pay
+	// bot, as actorBot is the searching seat's, seeded per seat identically
+	// for every simulation; oppPCGs[p] is its source, which the node cache
+	// saves and restores. Both nil without oppAutoPay, their searching
+	// seat's entry nil.
+	oppBots []*seat.Bot
+	oppPCGs []*rand.PCG
 }
 
 func newEngineEnv(w World, cfg *walkConfig) (*engineEnv, error) {
@@ -230,6 +253,15 @@ func newEngineEnv(w World, cfg *walkConfig) (*engineEnv, error) {
 	if cfg.autoPayment {
 		env.actorPCG = seat.BotSource(splitmix(cfg.envSeed ^ 0x6163746f722d6270 ^ uint64(cfg.actor)))
 		env.actorBot = seat.NewBotOn(env.actorPCG).EnableAutoPayMana()
+	}
+	if cfg.oppAutoPay {
+		env.oppPCGs = make([]*rand.PCG, n)
+		for p := range env.oppPCGs {
+			if state.PlayerID(p) != cfg.actor {
+				env.oppPCGs[p] = seat.BotSource(splitmix(cfg.envSeed ^ 0x6f70702d61757470 ^ uint64(p)))
+			}
+		}
+		env.oppBots = oppBotsOn(env.oppPCGs)
 	}
 	if cfg.rootPerWorld {
 		if err := env.matchRoot(); err != nil {
@@ -374,6 +406,13 @@ func (e *engineEnv) advance() (*Point, error) {
 				e.e.EnsurePaymentActions()
 			}
 			in, _ = e.actorBot.DecideBoard(context.Background(), b, *pd)
+		} else if ob := e.oppBot(pd.Player); ob != nil {
+			// OpponentMirror with AutoPayment: the opponent's own auto-pay bot.
+			b := botpolicy.BoardFromGameInto(g, e.e, pd.Player, e.board)
+			if pd.Kind == decision.KPriority {
+				e.e.EnsurePaymentActions()
+			}
+			in, _ = ob.DecideBoard(context.Background(), b, *pd)
 		} else {
 			// A decision whose bot answer reads no board (a priority window
 			// offering nothing but pass, or only mana activations outside a main
@@ -403,13 +442,17 @@ func (e *engineEnv) advance() (*Point, error) {
 				}
 				if e.cfg.priorTopK > 0 {
 					countTopK(e.cfg.stats, true, before)
-					return &Point{Keys: candKeys(cands), Prior: prior, cut: cut, fell: fell, ranked: true, before: before}, nil
+					pt := &Point{Keys: candKeys(cands), Prior: prior, cut: cut, fell: fell, ranked: true, before: before, extra: extraOf(kind)}
+					countPoint(e.cfg.stats, pt)
+					return pt, nil
 				}
 				keys := make([]Key, len(cands))
 				for i, c := range cands {
 					keys[i] = c.key
 				}
-				return &Point{Keys: keys, Prior: prior, cut: cut, fell: fell}, nil
+				pt := &Point{Keys: keys, Prior: prior, cut: cut, fell: fell, extra: extraOf(kind)}
+				countPoint(e.cfg.stats, pt)
+				return pt, nil
 			}
 		} else if e.cfg.oppNodes {
 			if pt := e.oppPoint(pd, in); pt != nil {
@@ -449,17 +492,24 @@ const oppKeyPrefix = "opp:"
 // per-world collector (the bot's answer first, capped at the limit), in the
 // manual-payment vocabulary: the walk bot that answers the opponent pays
 // manually, so a cast is offered only once its mana floats and a tap is
-// never a candidate. Every key names its objects by card name (nameKeys
-// with nothing known at the root) behind oppKeyPrefix. The prior is the
-// network's on the OPPONENT's redacted view (priors projects pd.Player's),
-// uniform without one. Truncated and PriorFallbacks count here as at the
-// searching seat's points.
+// never a candidate. Under oppAutoPay (OpponentMirror with AutoPayment) the
+// opponent's walk bot pays automatically instead and a priority point is
+// the payment vocabulary (paymentPriorityCands), as the searching seat's
+// is (Stats.OppPayPoints). Every key names its objects by card name
+// (nameKeys with nothing known at the root) behind oppKeyPrefix. The prior
+// is the network's on the OPPONENT's redacted view (priors projects
+// pd.Player's), uniform without one; under oppTopK (OpponentMirror with
+// PriorTopK) the point is enumerated in full and the ranking prior keeps
+// its best (rankedPrior), as at the searching seat's points. Truncated,
+// PriorFallbacks and the PriorTopK counters count here as at the searching
+// seat's points.
 func (e *engineEnv) oppPoint(pd *decision.Decision, in decision.Intent) *Point {
 	obs := e.oppObserver(pd.Player)
 	if obs == nil {
 		return nil
 	}
-	cands, kind, _, ok, cut := enumerateCutInto(obs, e.e, pd, in, e.cfg.kinds, e.cfg.limit, false, e.cfg.enumBoard)
+	autoPay, topK := e.cfg.oppAutoPay, e.cfg.oppTopK
+	cands, kind, _, ok, cut := enumerateCutInto(obs, e.e, pd, in, e.cfg.kinds, e.cfg.oppEnumLimit(), autoPay, e.cfg.enumBoard)
 	if !ok {
 		return nil
 	}
@@ -469,17 +519,58 @@ func (e *engineEnv) oppPoint(pd *decision.Decision, in decision.Intent) *Point {
 	if cut {
 		e.cfg.stats.Truncated++
 	}
+	cands, prior, fell, before := rankedPrior(e.cfg.priorNet(), topK, e.e, pd, in, kind, cands, e.cfg.priorView())
 	keys := make([]Key, len(cands))
 	for i := range cands {
 		cands[i].key = Key(oppKeyPrefix + string(cands[i].key))
 		keys[i] = cands[i].key
 	}
 	e.cur, e.cands = pd, cands
-	prior, fell := priors(e.cfg.priorNet(), e.e, pd, in, kind, cands, e.cfg.priorView())
 	if fell {
 		e.cfg.stats.PriorFallbacks++
 	}
-	return &Point{Keys: keys, Prior: prior, cut: cut, fell: fell, Opp: true}
+	pt := &Point{Keys: keys, Prior: prior, cut: cut, fell: fell, Opp: true, extra: extraOf(kind), oppPay: autoPay && kind == "priority"}
+	if topK > 0 {
+		countTopK(e.cfg.stats, true, before)
+		pt.ranked, pt.before = true, before
+	}
+	countPoint(e.cfg.stats, pt)
+	return pt
+}
+
+// oppBot is seat p's auto-pay walk bot under oppAutoPay, nil otherwise.
+func (e *engineEnv) oppBot(p state.PlayerID) *seat.Bot {
+	if int(p) < len(e.oppBots) {
+		return e.oppBots[p]
+	}
+	return nil
+}
+
+// oppBotsOn is the auto-pay bot on each non-nil source.
+func oppBotsOn(pcgs []*rand.PCG) []*seat.Bot {
+	bots := make([]*seat.Bot, len(pcgs))
+	for p, src := range pcgs {
+		if src != nil {
+			bots[p] = seat.NewBotOn(src).EnableAutoPayMana()
+		}
+	}
+	return bots
+}
+
+// extraOf is a Point's record of a fuller kind (Point.extra).
+func extraOf(kind string) int8 { return int8(extraIndex(kind) + 1) }
+
+// countPoint counts what producing in-walk point pt counts beyond
+// Truncated, PriorFallbacks and PriorTopK: a fuller kind's point
+// (Stats.ExtraPoints) and an opponent's payment point (OppPayPoints). The
+// node cache counts a stored point it reaches again the same way.
+func countPoint(st *Stats, pt *Point) {
+	if pt.extra > 0 {
+		st.ExtraPoints[pt.extra-1]++
+	}
+	if pt.oppPay {
+		st.OppPayPoints++
+	}
 }
 
 // oppObserver is seat p's collector in this world, forked on first use; nil

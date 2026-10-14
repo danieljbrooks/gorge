@@ -303,6 +303,7 @@ func skipped(nodes []*node, st *Stats) {
 			st.PriorFallbacks++
 		}
 		countTopK(st, n.pt.ranked, n.pt.before)
+		countPoint(st, n.pt)
 	}
 }
 
@@ -337,6 +338,9 @@ type envState struct {
 	// (engineEnv.oppObs, cloneObservers); nil without OpponentNodes or
 	// before the walk met an opponent's decision.
 	oppObs []*searchprobe.Collector
+	// opp are the opponents' auto-pay bot sources (engineEnv.oppPCGs); nil
+	// without oppAutoPay (OpponentMirror with AutoPayment).
+	opp []*rand.PCG
 }
 
 func (f *fixedEnvs) Save(env Env, final bool) (snap any, err error) {
@@ -353,6 +357,7 @@ func (f *fixedEnvs) Save(env Env, final bool) (snap any, err error) {
 		a := *ee.actorPCG
 		s.actor = &a
 	}
+	s.opp = clonePCGs(ee.oppPCGs)
 	if final {
 		// The walk is over: the state is ee's own engine, kept as it stands.
 		ee.e, ee.obs, ee.cur, ee.cands = nil, nil, nil, nil
@@ -417,6 +422,25 @@ func (f *fixedEnvs) Resume(snap any) (env Env, err error) {
 		ee.actorPCG = &a
 		ee.actorBot = seat.NewBotOn(ee.actorPCG).EnableAutoPayMana()
 	}
+	if s.opp != nil {
+		ee.oppPCGs = clonePCGs(s.opp)
+		ee.oppBots = oppBotsOn(ee.oppPCGs)
+	}
 	f.prev = ee
 	return ee, nil
+}
+
+// clonePCGs is a deep copy of a list of bot sources (nil entries kept).
+func clonePCGs(pcgs []*rand.PCG) []*rand.PCG {
+	if pcgs == nil {
+		return nil
+	}
+	out := make([]*rand.PCG, len(pcgs))
+	for i, p := range pcgs {
+		if p != nil {
+			c := *p
+			out[i] = &c
+		}
+	}
+	return out
 }
