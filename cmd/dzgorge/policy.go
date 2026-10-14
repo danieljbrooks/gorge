@@ -100,6 +100,17 @@ import (
 //	                             with pcr=: the full-search probability by searched kind (the :kinds=
 //	                             names: priority, attackers, blockers, target, modes, optional, choose,
 //	                             multitarget; kind=P is accepted too); unlisted kinds use pcr=
+//	   :decided[=H]              fewer simulations once the game is decided (KataGo; azmcts SeatConfig.Decided*):
+//	                             after decidedn= consecutive searched root values of the seat all above H, or
+//	                             all below 1-H (H in (0.5,1); bare :decided is 0.9), its full searches become
+//	                             DECIDED ones -- decidedsims= simulations, no root noise, the most-visited
+//	                             candidate -- recorded to -corpus with the training weight
+//	                             decidedw= (the record's "weight" field), until a root value leaves that side's
+//	                             band. pcr='s cheap decisions stay cheap. 0 (the default) is off
+//	   :decidedn=3               with decided=: the run of decided root values that starts it (default 3)
+//	   :decidedsims=40           with decided=: a decided search's simulations (default 40)
+//	   :decidedw=0.1             with decided=: a decided search's record weight in [0,1] (default 0.1; 1 records
+//	                             it as a full search, 0 does not record it)
 //	prior:net=gen1.gpol          the network's policy alone: the argmax of its prior over the
 //	                             candidates the search would build, no simulation
 //	az:sims=100:remote=unix:/tmp/dzg.sock
@@ -131,6 +142,10 @@ type policySpec struct {
 	PCR       float64               // pcr=P: playout-cap randomization's full-search probability; 0 is off
 	Cheap     int                   // cheap=N: a cheap search's simulations (defaultCheapSims under pcr=)
 	PCRK      map[string]float64    // pcrk=priority.0.65,attackers.0.5: full-search probability by searched kind
+	Decided   float64               // decided=H: decided-game searches above H / below 1-H; 0 is off
+	DecidedN  int                   // decidedn=N: the run of decided root values that starts them
+	DecSims   int                   // decidedsims=N: a decided search's simulations
+	DecW      float64               // decidedw=W: a decided search's record weight
 	OppNodes  bool
 	SkipPass  int
 	OppFull   bool         // :oppfull
@@ -171,6 +186,7 @@ func parsePolicy(s string) (*policySpec, error) {
 		return nil, fmt.Errorf("policy %q: want random, bot, sbtactical, az or prior", s)
 	}
 	cheapSet := false
+	var decSet decidedKeys
 	for _, kv := range parts[1:] {
 		k, v, _ := strings.Cut(kv, "=")
 		var err error
@@ -229,6 +245,17 @@ func parsePolicy(s string) (*policySpec, error) {
 			p.Cheap, err = strconv.Atoi(v)
 		case "pcrk":
 			p.PCRK, err = parsePCRK(v)
+		case "decided":
+			p.Decided, err = floatOr(v, defaultDecided)
+		case "decidedn":
+			decSet.n = true
+			p.DecidedN, err = strconv.Atoi(v)
+		case "decidedsims":
+			decSet.sims = true
+			p.DecSims, err = strconv.Atoi(v)
+		case "decidedw":
+			decSet.w = true
+			p.DecW, err = strconv.ParseFloat(v, 64)
 		case "oppnodes":
 			p.OppNodes = true
 		case "oppfull":
@@ -285,6 +312,9 @@ func parsePolicy(s string) (*policySpec, error) {
 		return nil, fmt.Errorf("policy %q: closedlist is an az key", s)
 	}
 	if err := p.checkPCR(cheapSet); err != nil {
+		return nil, fmt.Errorf("policy %q: %w", s, err)
+	}
+	if err := p.checkDecided(decSet); err != nil {
 		return nil, fmt.Errorf("policy %q: %w", s, err)
 	}
 	if p.Kind == "az" || p.Kind == "prior" {
@@ -348,6 +378,59 @@ func (p *policySpec) checkPCR(cheapSet bool) error {
 	return nil
 }
 
+// The decided-game keys' defaults (research memo D7, KataGo's 0.9 for 3 moves and weight 0.1):
+// bare :decided's threshold, the run that starts it, a decided search's simulations and its
+// record weight.
+const (
+	defaultDecided       = 0.9
+	defaultDecidedN      = 3
+	defaultDecidedSims   = 40
+	defaultDecidedWeight = 0.1
+)
+
+// decidedKeys records which of decidedn=, decidedsims= and decidedw= a spec set.
+type decidedKeys struct{ n, sims, w bool }
+
+// floatOr parses a key's value, def for a bare key (no =value).
+func floatOr(v string, def float64) (float64, error) {
+	if v == "" {
+		return def, nil
+	}
+	return strconv.ParseFloat(v, 64)
+}
+
+// checkDecided checks the decided-game keys against each other and the kind (az only) and fills
+// the defaults of the ones not set; azmcts checks them again (validateDecided).
+func (p *policySpec) checkDecided(set decidedKeys) error {
+	if p.Decided == 0 && !set.n && !set.sims && !set.w {
+		return nil
+	}
+	switch {
+	case p.Kind != "az":
+		return fmt.Errorf("decided=, decidedn=, decidedsims= and decidedw= are az keys")
+	case p.Decided == 0:
+		return fmt.Errorf("decidedn=, decidedsims= and decidedw= need decided=H")
+	case !(p.Decided > 0.5 && p.Decided < 1):
+		return fmt.Errorf("decided=%g: want a root-value threshold in (0.5,1) (0 is off)", p.Decided)
+	case set.n && p.DecidedN < 1:
+		return fmt.Errorf("decidedn=%d: want >= 1 root values", p.DecidedN)
+	case set.sims && p.DecSims < 1:
+		return fmt.Errorf("decidedsims=%d: want >= 1 simulations", p.DecSims)
+	case set.w && !(p.DecW >= 0 && p.DecW <= 1):
+		return fmt.Errorf("decidedw=%g: want a record weight in [0,1]", p.DecW)
+	}
+	if !set.n {
+		p.DecidedN = defaultDecidedN
+	}
+	if !set.sims {
+		p.DecSims = defaultDecidedSims
+	}
+	if !set.w {
+		p.DecW = defaultDecidedWeight
+	}
+	return nil
+}
+
 // recordFeatures is the encoding visit corpora are written in (play -record-features).
 var recordFeatures = policynet.FeaturesMZ
 
@@ -379,6 +462,7 @@ func (p *policySpec) azConfig() azmcts.SeatConfig {
 	cfg.Search.PriorTopK = p.TopK
 	cfg.SimsByKind = p.KSims
 	cfg.FullProb, cfg.CheapSims, cfg.FullProbByKind = p.PCR, p.Cheap, p.PCRK
+	cfg.DecidedHigh, cfg.DecidedN, cfg.DecidedSims, cfg.DecidedWeight = p.Decided, p.DecidedN, p.DecSims, p.DecW
 	cfg.Search.OpponentNodes = p.OppNodes
 	cfg.Search.SkipPass = p.SkipPass
 	cfg.Search.OpponentMirror = p.OppFull
