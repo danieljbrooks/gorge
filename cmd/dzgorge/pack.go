@@ -41,8 +41,12 @@ func runPack(args []string) int {
 		fmt.Fprintln(os.Stderr, "pack:", err)
 		return 1
 	}
-	fmt.Printf("packed %d records (%d without a known outcome, %d not entity-encoded) into %d shards under %s\n",
-		w.total, w.unknown, w.noEntity, w.shards, *out)
+	weighted := ""
+	if w.weighted > 0 {
+		weighted = fmt.Sprintf(", %d with a training weight", w.weighted)
+	}
+	fmt.Printf("packed %d records (%d without a known outcome, %d not entity-encoded%s) into %d shards under %s\n",
+		w.total, w.unknown, w.noEntity, weighted, w.shards, *out)
 	return 0
 }
 
@@ -86,11 +90,18 @@ type shardWriter struct {
 	kinds                                   map[string]uint8
 	kindNames                               []string
 	total, unknown, noEntity, shards        int
+
+	// weight is the optional training weight column (VisitRecord.Weight, 1 for a record without
+	// one), written as weight.npy only in a shard that holds a weighted record (shardWeighted > 0);
+	// weighted counts the weighted records of every shard.
+	weight                  []float32
+	shardWeighted, weighted int
 }
 
 func (w *shardWriter) reset() {
 	w.p.reset()
 	w.outcome, w.rootValue, w.cVisits, w.cPrior, w.cQ = nil, nil, nil, nil, nil
+	w.weight, w.shardWeighted = nil, 0
 	w.turn, w.sims, w.choice, w.game = nil, nil, nil, nil
 	w.candOff, w.coOff, w.coOpt = []int32{0}, []int32{0}, nil
 	w.seat, w.subset, w.kind = nil, nil, nil
@@ -136,6 +147,13 @@ func (w *shardWriter) add(rec *policynet.VisitRecord) error {
 	}
 	w.outcome = append(w.outcome, oc)
 	w.rootValue = append(w.rootValue, float32(rec.RootValue))
+	wt := float32(1)
+	if rec.Weight > 0 {
+		wt = float32(rec.Weight)
+		w.shardWeighted++
+		w.weighted++
+	}
+	w.weight = append(w.weight, wt)
 	w.turn = append(w.turn, rec.Turn)
 	w.sims = append(w.sims, int32(rec.Sims))
 	w.choice = append(w.choice, int32(rec.Choice))
@@ -212,6 +230,15 @@ func (w *shardWriter) flush() error {
 		{"subset", w.subset, 0}, {"kind", w.kind, 0}, {"sims", w.sims, 0}, {"choice", w.choice, 0}, {"game", w.game, 0},
 		{"cand_off", w.candOff, 0}, {"cand_visits", w.cVisits, 0}, {"cand_prior", w.cPrior, 0}, {"cand_q", w.cQ, 0},
 		{"co_off", w.coOff, 0}, {"co_opt", w.coOpt, 0},
+	}
+	if w.shardWeighted > 0 {
+		// Optional (SPEC §2 readers that predate it ignore the file): only decided-game records
+		// (az :decided=) carry a weight, so a corpus without them packs exactly as before.
+		arrays = append(arrays, struct {
+			name string
+			data any
+			cols int
+		}{"weight", w.weight, 0})
 	}
 	for _, a := range arrays {
 		if err := writeNpy(filepath.Join(dir, a.name+".npy"), a.data, a.cols); err != nil {

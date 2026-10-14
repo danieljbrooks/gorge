@@ -64,6 +64,11 @@ type gameRec struct {
 	// pcr is each seat's playout-cap searched decisions, full and cheap (azmcts
 	// Seat.PCRCounts), for the summary only: unexported, so the game line is unchanged.
 	pcr [2][2]int
+	// decided is each seat's decided-game searches (azmcts Seat.DecidedCounts): run, on the winning
+	// side, and on the side the game's result agrees with; weighted the records this game added to
+	// -corpus with a training weight. Summary only, like pcr.
+	decided  [2][3]int
+	weighted int
 }
 
 type job struct {
@@ -84,6 +89,8 @@ type azAgg struct {
 	oppPayPoints               atomic.Int64
 	// :pcr=: searched decisions playout-cap randomization made cheap, and their wall ms.
 	cheapSearched, cheapMsX1000 atomic.Int64
+	// :decided=: decided-game searches and their wall ms.
+	decidedSearched, decidedMsX1000 atomic.Int64
 }
 
 var azStats azAgg
@@ -376,6 +383,10 @@ func runPlay(args []string) int {
 				azStats.cheapSearched.Add(1)
 				azStats.cheapMsX1000.Add(int64(d.MS * 1000))
 			}
+			if d.Decided {
+				azStats.decidedSearched.Add(1)
+				azStats.decidedMsX1000.Add(int64(d.MS * 1000))
+			}
 			for x := range azStats.extraSearched {
 				azStats.extraSearched[x].Add(int64(d.Stats.ExtraSearched[x]))
 				azStats.extraPoints[x].Add(int64(d.Stats.ExtraPoints[x]))
@@ -407,6 +418,8 @@ func runPlay(args []string) int {
 		turns                                 int64
 		mull                                  [2]int    // mulligans taken, by side (A, B)
 		pcr                                   [2][2]int // playout-cap searched decisions by side (A, B): full, cheap
+		decided                               [2][3]int // decided-game searches by side (A, B): run, winning, agreeing
+		weighted                              int
 	}
 	// Games finish out of order; they are written in game order, so the output files (and a
 	// network trained on the corpus) are a pure function of the flags.
@@ -446,6 +459,7 @@ func runPlay(args []string) int {
 				}
 				tally.done++
 				tally.visits += rec.Visits
+				tally.weighted += rec.weighted
 				switch rec.Result {
 				case "A":
 					tally.a++
@@ -463,6 +477,9 @@ func runPlay(args []string) int {
 					tally.mull[jb.sides[s]] += rec.Mull[s]
 					tally.pcr[jb.sides[s]][0] += rec.pcr[s][0]
 					tally.pcr[jb.sides[s]][1] += rec.pcr[s][1]
+					for k := range rec.decided[s] {
+						tally.decided[jb.sides[s]][k] += rec.decided[s][k]
+					}
 				}
 				if tally.done%every == 0 || tally.done == len(jobs) {
 					el := time.Since(t0).Seconds()
@@ -541,14 +558,31 @@ func runPlay(args []string) int {
 			sum["az_extra_searched"] = extraS
 			sum["az_extra_points_per_searched"] = extraP
 		}
-		if c := azStats.cheapSearched.Load(); c > 0 {
-			// :pcr=: wall ms per cheap searched decision and per other (full, or a seat without pcr=).
-			cms := float64(azStats.cheapMsX1000.Load()) / 1000
+		c, dn := azStats.cheapSearched.Load(), azStats.decidedSearched.Load()
+		cms, dms := float64(azStats.cheapMsX1000.Load())/1000, float64(azStats.decidedMsX1000.Load())/1000
+		if c > 0 {
+			// :pcr=: wall ms per cheap searched decision.
 			sum["az_ms_per_cheap_searched"] = cms / float64(c)
-			if n > c {
-				sum["az_ms_per_full_searched"] = (float64(azStats.msX1000.Load())/1000 - cms) / float64(n-c)
-			}
 		}
+		if dn > 0 {
+			// :decided=: wall ms per decided-game search.
+			sum["az_ms_per_decided_searched"] = dms / float64(dn)
+		}
+		if c+dn > 0 && n > c+dn {
+			// ... and per other searched decision (full, or a seat without pcr= or decided=).
+			sum["az_ms_per_full_searched"] = (float64(azStats.msX1000.Load())/1000 - cms - dms) / float64(n-c-dn)
+		}
+	}
+	if specs[0].Decided > 0 || specs[1].Decided > 0 {
+		// :decided=: decided-game searches by side, those on the winning side (root values above the
+		// threshold), those whose side the game's result agreed with (a draw or stall agrees with
+		// neither), and the records written with a training weight (decidedw= < 1).
+		for i, side := range []string{"a", "b"} {
+			sum[side+"_decided"] = tally.decided[i][0]
+			sum[side+"_decided_winning"] = tally.decided[i][1]
+			sum[side+"_decided_agree"] = tally.decided[i][2]
+		}
+		sum["visit_records_weighted"] = tally.weighted
 	}
 	if specs[0].PCR > 0 || specs[1].PCR > 0 {
 		// :pcr=: searched decisions by side that playout-cap randomization made full (recorded)
@@ -717,11 +751,27 @@ func playOne(jb job, specs []*policySpec, dc *deckCache, reg *cards.Registry, ma
 		if pc, ok := st.(interface{ PCRCounts() (int, int) }); ok {
 			rec.pcr[s][0], rec.pcr[s][1] = pc.PCRCounts()
 		}
+		if dk, ok := st.(interface{ DecidedCounts() (int, int) }); ok {
+			n, win := dk.DecidedCounts()
+			agree := 0
+			switch rec.Winner {
+			case s:
+				agree = win
+			case 1 - s:
+				agree = n - win
+			}
+			rec.decided[s] = [3]int{n, win, agree}
+		}
 	}
 	var member []byte
 	if len(vrecs) > 0 {
 		member = corpusMember(vrecs, o, err)
 		rec.Visits = len(vrecs)
+		for _, r := range vrecs {
+			if r.Weight > 0 {
+				rec.weighted++
+			}
+		}
 	}
 	if err == nil && e != nil && !gbench.IsAbort(o.StallOn) {
 		*spare = e.Release()
