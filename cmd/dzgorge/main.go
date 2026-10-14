@@ -8,6 +8,7 @@
 //	dzgorge play     -a <policy> -b <policy> -pairs N -out games.jsonl [-corpus visits.jsonl.gz]
 //	dzgorge coverage                                  which pool decks gorge fully supports
 //	dzgorge pack     -in visits.jsonl.gz -out DIR     a visit corpus as dzg training shards (gorge/dzg)
+//	dzgorge sealed-pools -set FDN -n N -seed S -out pools.jsonl [-best23]   draftlab sealed pools for the deck builder
 //
 // A game draws two different decks from the pool's split. With -a != -b each deck
 // pair is played twice on the same seed, the policies swapping seats, so each
@@ -31,6 +32,8 @@ func main() {
 		os.Exit(runCoverage(os.Args[2:]))
 	case "pack":
 		os.Exit(runPack(os.Args[2:]))
+	case "sealed-pools":
+		os.Exit(runSealedPools(os.Args[2:]))
 	case "gonet-check": // hidden: the in-process network against PyTorch (gonet_check.go)
 		os.Exit(runGonetCheck(os.Args[2:]))
 	default:
@@ -39,6 +42,6 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: dzgorge play|coverage|pack [flags]  (-h for each)")
+	fmt.Fprintln(os.Stderr, "usage: dzgorge play|coverage|pack|sealed-pools [flags]  (-h for each)")
 	os.Exit(2)
 }
