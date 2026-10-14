@@ -61,6 +61,9 @@ type gameRec struct {
 	MM     [2]mmStats `json:"mm,omitempty"`
 	Visits int        `json:"visits,omitempty"` // visit records this game added to -corpus
 	Err    string     `json:"error,omitempty"`
+	// pcr is each seat's playout-cap searched decisions, full and cheap (azmcts
+	// Seat.PCRCounts), for the summary only: unexported, so the game line is unchanged.
+	pcr [2][2]int
 }
 
 type job struct {
@@ -79,6 +82,8 @@ type azAgg struct {
 	// (azmcts.ExtraKindNames), and the opponent's payment points (:oppnodes:oppfull with :autopay).
 	extraSearched, extraPoints [azmcts.NumExtraKinds]atomic.Int64
 	oppPayPoints               atomic.Int64
+	// :pcr=: searched decisions playout-cap randomization made cheap, and their wall ms.
+	cheapSearched, cheapMsX1000 atomic.Int64
 }
 
 var azStats azAgg
@@ -367,6 +372,10 @@ func runPlay(args []string) int {
 			azStats.oppPoints.Add(int64(d.Stats.OppPoints))
 			azStats.oppExpanded.Add(int64(d.Stats.OppExpanded))
 			azStats.oppPayPoints.Add(int64(d.Stats.OppPayPoints))
+			if d.Cheap {
+				azStats.cheapSearched.Add(1)
+				azStats.cheapMsX1000.Add(int64(d.MS * 1000))
+			}
 			for x := range azStats.extraSearched {
 				azStats.extraSearched[x].Add(int64(d.Stats.ExtraSearched[x]))
 				azStats.extraPoints[x].Add(int64(d.Stats.ExtraPoints[x]))
@@ -396,7 +405,8 @@ func runPlay(args []string) int {
 	var tally struct {
 		done, a, b, draw, stall, errs, visits int
 		turns                                 int64
-		mull                                  [2]int // mulligans taken, by side (A, B)
+		mull                                  [2]int    // mulligans taken, by side (A, B)
+		pcr                                   [2][2]int // playout-cap searched decisions by side (A, B): full, cheap
 	}
 	// Games finish out of order; they are written in game order, so the output files (and a
 	// network trained on the corpus) are a pure function of the flags.
@@ -451,6 +461,8 @@ func runPlay(args []string) int {
 				tally.turns += int64(rec.Turns)
 				for s := 0; s < 2; s++ {
 					tally.mull[jb.sides[s]] += rec.Mull[s]
+					tally.pcr[jb.sides[s]][0] += rec.pcr[s][0]
+					tally.pcr[jb.sides[s]][1] += rec.pcr[s][1]
 				}
 				if tally.done%every == 0 || tally.done == len(jobs) {
 					el := time.Since(t0).Seconds()
@@ -529,6 +541,20 @@ func runPlay(args []string) int {
 			sum["az_extra_searched"] = extraS
 			sum["az_extra_points_per_searched"] = extraP
 		}
+		if c := azStats.cheapSearched.Load(); c > 0 {
+			// :pcr=: wall ms per cheap searched decision and per other (full, or a seat without pcr=).
+			cms := float64(azStats.cheapMsX1000.Load()) / 1000
+			sum["az_ms_per_cheap_searched"] = cms / float64(c)
+			if n > c {
+				sum["az_ms_per_full_searched"] = (float64(azStats.msX1000.Load())/1000 - cms) / float64(n-c)
+			}
+		}
+	}
+	if specs[0].PCR > 0 || specs[1].PCR > 0 {
+		// :pcr=: searched decisions by side that playout-cap randomization made full (recorded)
+		// and cheap (not recorded); 0 and 0 for a side without pcr=.
+		sum["a_pcr_full"], sum["a_pcr_cheap"] = tally.pcr[0][0], tally.pcr[0][1]
+		sum["b_pcr_full"], sum["b_pcr_cheap"] = tally.pcr[1][0], tally.pcr[1][1]
 	}
 	if azStats.asked.Load() > 0 {
 		sum["az_redeal_refused"] = azStats.refused.Load()
@@ -685,6 +711,12 @@ func playOne(jb job, specs []*policySpec, dc *deckCache, reg *cards.Registry, ma
 	}
 	if e != nil {
 		rec.InHand = inHand(e, dc)
+	}
+	for s, st := range seats {
+		// An audit seat embeds its *azmcts.Seat, so it counts too.
+		if pc, ok := st.(interface{ PCRCounts() (int, int) }); ok {
+			rec.pcr[s][0], rec.pcr[s][1] = pc.PCRCounts()
+		}
 	}
 	var member []byte
 	if len(vrecs) > 0 {

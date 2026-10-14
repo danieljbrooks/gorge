@@ -85,6 +85,21 @@ import (
 //	                             default the TRAIN split of -decks/-pool), conditioned on the colours
 //	                             of the opponent's seen cards, never from its real list or its real
 //	                             hidden cards (azmcts.WorldRedealClosed)
+//	   :ksims=priority.200,blockers.40
+//	                             per-kind simulations at the seat's root (decision kinds; azmcts
+//	                             SeatConfig.SimsByKind); other kinds use sims=
+//	   :pcr=P                    playout-cap randomization (KataGo; azmcts SeatConfig.FullProb): each
+//	                             searched root decision is a FULL search with probability P (sims=,
+//	                             ksims=, :explore's noise and sampling; recorded to -corpus) or else a
+//	                             CHEAP one (cheap= simulations, no root noise, the most-visited
+//	                             candidate, never recorded). A seeded coin per decision (seat seed and
+//	                             decision sequence), so games never depend on -workers. P in [0,1];
+//	                             0 (the default) is off, every searched decision full as before
+//	   :cheap=N                  with pcr=: a cheap search's simulations (default 40)
+//	   :pcrk=priority.0.65,attackers.0.5
+//	                             with pcr=: the full-search probability by searched kind (the :kinds=
+//	                             names: priority, attackers, blockers, target, modes, optional, choose,
+//	                             multitarget; kind=P is accepted too); unlisted kinds use pcr=
 //	prior:net=gen1.gpol          the network's policy alone: the argmax of its prior over the
 //	                             candidates the search would build, no simulation
 //	az:sims=100:remote=unix:/tmp/dzg.sock
@@ -113,6 +128,9 @@ type policySpec struct {
 	Mull      botpolicy.MulliganRule // :mull / :keep7; zero is gorge's 1/3 coin
 	TopK      int
 	KSims     map[decision.Kind]int // ksims=priority.200,blockers.40: per-kind simulations (patch 0009)
+	PCR       float64               // pcr=P: playout-cap randomization's full-search probability; 0 is off
+	Cheap     int                   // cheap=N: a cheap search's simulations (defaultCheapSims under pcr=)
+	PCRK      map[string]float64    // pcrk=priority.0.65,attackers.0.5: full-search probability by searched kind
 	OppNodes  bool
 	SkipPass  int
 	OppFull   bool         // :oppfull
@@ -152,6 +170,7 @@ func parsePolicy(s string) (*policySpec, error) {
 	default:
 		return nil, fmt.Errorf("policy %q: want random, bot, sbtactical, az or prior", s)
 	}
+	cheapSet := false
 	for _, kv := range parts[1:] {
 		k, v, _ := strings.Cut(kv, "=")
 		var err error
@@ -203,6 +222,13 @@ func parsePolicy(s string) (*policySpec, error) {
 					break
 				}
 			}
+		case "pcr":
+			p.PCR, err = strconv.ParseFloat(v, 64)
+		case "cheap":
+			cheapSet = true
+			p.Cheap, err = strconv.Atoi(v)
+		case "pcrk":
+			p.PCRK, err = parsePCRK(v)
 		case "oppnodes":
 			p.OppNodes = true
 		case "oppfull":
@@ -258,6 +284,9 @@ func parsePolicy(s string) (*policySpec, error) {
 	if p.Closed && p.Kind != "az" {
 		return nil, fmt.Errorf("policy %q: closedlist is an az key", s)
 	}
+	if err := p.checkPCR(cheapSet); err != nil {
+		return nil, fmt.Errorf("policy %q: %w", s, err)
+	}
 	if p.Kind == "az" || p.Kind == "prior" {
 		// Validated open: the closed world's belief is loaded later (setBelief).
 		q := *p
@@ -267,6 +296,56 @@ func parsePolicy(s string) (*policySpec, error) {
 		}
 	}
 	return p, nil
+}
+
+// defaultCheapSims is a cheap search's simulations under pcr= without cheap= (DraftZero's
+// proposed arm: a cheap search of 32-64 only moves the game on, so it need not be 100).
+const defaultCheapSims = 40
+
+// parsePCRK parses pcrk='s comma list of kind.P (or kind=P) entries. The kind names and the
+// ranges are azmcts.SeatConfig's to check (NewSeat, at parse time via policySpec.seat).
+func parsePCRK(v string) (map[string]float64, error) {
+	m := map[string]float64{}
+	for _, kv := range strings.Split(v, ",") {
+		k, n, ok := strings.Cut(kv, "=")
+		if !ok {
+			k, n, ok = strings.Cut(kv, ".")
+		}
+		if !ok || k == "" {
+			return nil, fmt.Errorf("entry %q: want kind.P", kv)
+		}
+		if _, dup := m[k]; dup {
+			return nil, fmt.Errorf("kind %q listed twice", k)
+		}
+		f, err := strconv.ParseFloat(n, 64)
+		if err != nil {
+			return nil, fmt.Errorf("entry %q: %w", kv, err)
+		}
+		m[k] = f
+	}
+	return m, nil
+}
+
+// checkPCR checks the playout-cap keys against each other and the kind (az only) and fills
+// cheap='s default; the ranges and kind names are checked by azmcts (validatePCR).
+func (p *policySpec) checkPCR(cheapSet bool) error {
+	if p.PCR == 0 && !cheapSet && p.PCRK == nil {
+		return nil
+	}
+	switch {
+	case p.Kind != "az":
+		return fmt.Errorf("pcr=, cheap= and pcrk= are az keys")
+	case p.PCR != p.PCR || p.PCR < 0 || p.PCR > 1:
+		return fmt.Errorf("pcr=%g: want a full-search probability in [0,1] (0 is off)", p.PCR)
+	case p.PCR == 0:
+		return fmt.Errorf("cheap= and pcrk= need pcr=P > 0")
+	case cheapSet && p.Cheap < 1:
+		return fmt.Errorf("cheap=%d: want >= 1 simulations", p.Cheap)
+	}
+	if !cheapSet {
+		p.Cheap = defaultCheapSims
+	}
+	return nil
 }
 
 // recordFeatures is the encoding visit corpora are written in (play -record-features).
@@ -299,6 +378,7 @@ func (p *policySpec) azConfig() azmcts.SeatConfig {
 	cfg.Mulligan = p.Mull
 	cfg.Search.PriorTopK = p.TopK
 	cfg.SimsByKind = p.KSims
+	cfg.FullProb, cfg.CheapSims, cfg.FullProbByKind = p.PCR, p.Cheap, p.PCRK
 	cfg.Search.OpponentNodes = p.OppNodes
 	cfg.Search.SkipPass = p.SkipPass
 	cfg.Search.OpponentMirror = p.OppFull
