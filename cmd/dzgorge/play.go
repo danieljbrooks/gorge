@@ -91,6 +91,9 @@ type azAgg struct {
 	cheapSearched, cheapMsX1000 atomic.Int64
 	// :decided=: decided-game searches and their wall ms.
 	decidedSearched, decidedMsX1000 atomic.Int64
+	// :forced=: searches with forced playouts, their completed simulations, the root selections the
+	// forced rule changed, and the visits and children policy target pruning took out.
+	forcedSearched, forcedSims, forcedPlayouts, prunedVisits, prunedChildren atomic.Int64
 }
 
 var azStats azAgg
@@ -387,6 +390,13 @@ func runPlay(args []string) int {
 				azStats.decidedSearched.Add(1)
 				azStats.decidedMsX1000.Add(int64(d.MS * 1000))
 			}
+			if d.Stats.ForcedSearched > 0 {
+				azStats.forcedSearched.Add(int64(d.Stats.ForcedSearched))
+				azStats.forcedSims.Add(int64(d.Stats.Completed))
+				azStats.forcedPlayouts.Add(int64(d.Stats.ForcedPlayouts))
+				azStats.prunedVisits.Add(int64(d.Stats.PrunedVisits))
+				azStats.prunedChildren.Add(int64(d.Stats.PrunedChildren))
+			}
 			for x := range azStats.extraSearched {
 				azStats.extraSearched[x].Add(int64(d.Stats.ExtraSearched[x]))
 				azStats.extraPoints[x].Add(int64(d.Stats.ExtraPoints[x]))
@@ -571,6 +581,16 @@ func runPlay(args []string) int {
 		if c+dn > 0 && n > c+dn {
 			// ... and per other searched decision (full, or a seat without pcr= or decided=).
 			sum["az_ms_per_full_searched"] = (float64(azStats.msX1000.Load())/1000 - cms - dms) / float64(n-c-dn)
+		}
+		if f := azStats.forcedSearched.Load(); f > 0 {
+			// :forced=: searches with forced playouts; per such search, the root selections the forced
+			// rule changed, and the visits and children policy target pruning took out of the recorded
+			// target; and the pruned share of their completed simulations.
+			sum["az_forced_searched"] = f
+			sum["az_forced_playouts_per_forced_searched"] = float64(azStats.forcedPlayouts.Load()) / float64(f)
+			sum["az_pruned_visits_per_forced_searched"] = float64(azStats.prunedVisits.Load()) / float64(f)
+			sum["az_pruned_children_per_forced_searched"] = float64(azStats.prunedChildren.Load()) / float64(f)
+			sum["az_pruned_visit_share"] = float64(azStats.prunedVisits.Load()) / float64(max(1, azStats.forcedSims.Load()))
 		}
 	}
 	if specs[0].Decided > 0 || specs[1].Decided > 0 {

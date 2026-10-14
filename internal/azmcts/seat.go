@@ -93,9 +93,9 @@ type SeatConfig struct {
 	// consecutive searched root values of the seat are all above
 	// DecidedHigh, or all below 1 - DecidedHigh, each later full search is
 	// a DECIDED one -- DecidedSims simulations, no root noise, the
-	// most-visited candidate -- recorded with training weight
-	// DecidedWeight (VisitRecord.Weight; 1 records it as usual, 0 not at
-	// all), until a searched root value leaves that side's band. A
+	// most-visited candidate, no forced playouts -- recorded with training
+	// weight DecidedWeight (VisitRecord.Weight; 1 records it as usual, 0
+	// not at all), until a searched root value leaves that side's band. A
 	// playout-cap cheap decision stays cheap. Only searches that completed
 	// (no refusal, not every simulation failed) count. DecidedHigh 0 is off
 	// (the default): the seat exactly as without these fields, whatever
