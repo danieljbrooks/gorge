@@ -34,6 +34,10 @@ type walkConfig struct {
 	// uniformPrior keeps the uniform prior at in-walk points even with a
 	// network (Options.UniformPrior).
 	uniformPrior bool
+	// priorTopK is the PriorTopK in effect (Options.priorTopK): 0, or the
+	// candidates rankedPrior keeps at every in-walk point of the searching
+	// seat, which then enumerates past limit (enumLimit).
+	priorTopK int
 	// rootPerWorld re-derives the root candidates in every world
 	// (Options.RootPerWorld).
 	rootPerWorld bool
@@ -107,6 +111,25 @@ func (c *walkConfig) priorView() *view.View {
 		return nil
 	}
 	return &c.views.prior
+}
+
+// enumLimit is the searching seat's enumeration cap at an in-walk point:
+// limit, or under priorTopK every candidate (BenchCandidateLimit), for
+// rankedPrior to cut.
+func (c *walkConfig) enumLimit() int {
+	if c.priorTopK > 0 {
+		return BenchCandidateLimit
+	}
+	return c.limit
+}
+
+// candKeys is cands' keys, in order.
+func candKeys(cands []cand) []Key {
+	keys := make([]Key, len(cands))
+	for i, c := range cands {
+		keys[i] = c.key
+	}
+	return keys
 }
 
 // worldEnvs adapts a WorldSource to the tree's EnvSource.
@@ -348,17 +371,23 @@ func (e *engineEnv) advance() (*Point, error) {
 			}
 		}
 		if pd.Player == e.cfg.actor {
-			if cands, kind, _, ok, cut := enumerateCutInto(e.obs, e.e, pd, in, e.cfg.kinds, e.cfg.limit, e.cfg.autoPayment, e.cfg.enumBoard); ok {
+			if cands, kind, _, ok, cut := enumerateCutInto(e.obs, e.e, pd, in, e.cfg.kinds, e.cfg.enumLimit(), e.cfg.autoPayment, e.cfg.enumBoard); ok {
 				if cut {
 					e.cfg.stats.Truncated++
 				}
 				if e.cfg.nameKeys {
 					cands = nameKeys(e.obs, e.e, pd, cands, e.cfg.rootRefs)
 				}
+				// Under priorTopK the network keeps the point's best
+				// candidates (after nameKeys, which may merge two).
+				cands, prior, fell, before := rankedPrior(e.cfg.priorNet(), e.cfg.priorTopK, e.e, pd, in, kind, cands, e.cfg.priorView())
 				e.cur, e.cands = pd, cands
-				prior, fell := priors(e.cfg.priorNet(), e.e, pd, in, kind, cands, e.cfg.priorView())
 				if fell {
 					e.cfg.stats.PriorFallbacks++
+				}
+				if e.cfg.priorTopK > 0 {
+					countTopK(e.cfg.stats, true, before)
+					return &Point{Keys: candKeys(cands), Prior: prior, cut: cut, fell: fell, ranked: true, before: before}, nil
 				}
 				keys := make([]Key, len(cands))
 				for i, c := range cands {

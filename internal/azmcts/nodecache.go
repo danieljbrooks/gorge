@@ -296,6 +296,7 @@ func skipped(nodes []*node, st *Stats) {
 		if n.pt.fell {
 			st.PriorFallbacks++
 		}
+		countTopK(st, n.pt.ranked, n.pt.before)
 	}
 }
 

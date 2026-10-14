@@ -45,6 +45,11 @@ type Point struct {
 	// a stored point without producing it again, counts them exactly as a
 	// re-walk would have.
 	cut, fell bool
+	// ranked and before are, likewise, the PriorTopK counters producing it
+	// counted: ranked one PriorTopKPoints, before > 0 one PriorTopKCuts and
+	// before PriorTopKBefore.
+	ranked bool
+	before int
 }
 
 // Leaf is the value of the position a walk stopped at, for the searching
