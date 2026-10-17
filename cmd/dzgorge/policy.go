@@ -81,6 +81,31 @@ import (
 //	                             any face's name; a name may not hold a colon). Any step with something
 //	                             on the stack, and every other turn's, is unaffected. An az and prior key
 //	                             (azmcts Options.HoldUpkeep, HoldUpkeepExempt)
+//	   :tricks[=NAMES]           combat tricks only where they do something, and never on the wrong side. A
+//	                             gated card's cast (by default FDN's Giant Growth, Sure Strike, Bulk Up, Claws
+//	                             Out, Goblin Surprise, Snakeskin Veil, Divine Resilience, Fake Your Own
+//	                             Death, Celestial Armor and Fleeting Flight; =NAMES replaces the list,
+//	                             '|'-separated, a card matching by any face's name, a name holding no colon)
+//	                             is a candidate only with something on the stack, or from declare attackers
+//	                             through combat damage once a creature is attacking; a card granting evasion
+//	                             (Fleeting Flight's flying) also at its controller's own beginning of combat.
+//	                             Goblin Surprise, a modal spell whose token mode is no trick, is cast freely
+//	                             and only its pump mode is gated, at its modes decision. Side checks: a gated
+//	                             card is no candidate when no permanent of its caster's is a legal target (a
+//	                             pump-all or Celestial Armor: when the caster controls no creature), and at
+//	                             its target decision the opponent's options are dropped when one of the
+//	                             caster's is offered; a counterspell (Refute, Essence Scatter, An Offer You
+//	                             Can't Refuse, any SP$ Counter whose only target is a spell; whatever the
+//	                             list) is no candidate unless an opponent's spell is a legal target, and at
+//	                             its target decision the caster's own spells are dropped when an
+//	                             opponent's is offered. At the seat's root and its points inside a
+//	                             simulation, and with :oppnodes:oppfull at the opponent's too; a bot answer
+//	                             the rule drops is played as pass, or as the first kept targets or modes.
+//	                             Composes with :holdupkeep. play's summary counts the roots changed as
+//	                             az_tricks_gated_roots and az_tricks_side_roots, the bot answers replaced as
+//	                             az_tricks_bot_passes, and the decisions changed inside simulations as
+//	                             az_tricks_walk and az_tricks_opp. An az and prior key (azmcts
+//	                             Options.Tricks, TricksCards)
 //	   :topk=K                   the network chooses the candidates: every searched decision (the root
 //	                             and every one inside a simulation) is enumerated in full and the bot's
 //	                             answer is kept with the K-1 others the network's prior ranks highest,
@@ -208,6 +233,9 @@ type policySpec struct {
 	// HoldUpkeep is :holdupkeep, HoldExempt its =NAMES (azmcts Options.HoldUpkeep, HoldUpkeepExempt).
 	HoldUpkeep bool
 	HoldExempt string
+	// Tricks is :tricks, TricksCards its =NAMES (azmcts Options.Tricks, TricksCards; "" the default list).
+	Tricks      bool
+	TricksCards string
 }
 
 // setBelief gives a :closedlist seat its belief (loaded after the specs are parsed).
@@ -278,6 +306,9 @@ func parsePolicy(s string) (*policySpec, error) {
 			p.ManualTaps = true
 		case "holdupkeep":
 			p.HoldUpkeep, p.HoldExempt = true, v
+			err = checkHoldExempt(v)
+		case "tricks":
+			p.Tricks, p.TricksCards = true, v
 			err = checkHoldExempt(v)
 		case "mull":
 			p.Mull = botpolicy.MulliganLands
@@ -377,6 +408,9 @@ func parsePolicy(s string) (*policySpec, error) {
 	if p.HoldUpkeep && !p.searches() {
 		return nil, fmt.Errorf("policy %q: holdupkeep is an az and prior key", s)
 	}
+	if p.Tricks && !p.searches() {
+		return nil, fmt.Errorf("policy %q: tricks is an az and prior key", s)
+	}
 	if err := p.checkPCR(cheapSet); err != nil {
 		return nil, fmt.Errorf("policy %q: %w", s, err)
 	}
@@ -397,8 +431,8 @@ func parsePolicy(s string) (*policySpec, error) {
 	return p, nil
 }
 
-// checkHoldExempt checks holdupkeep='s '|'-separated card names (azmcts Options.HoldUpkeepExempt, passed on
-// as written): "" is a bare key, and an empty name (a stray separator) is an error.
+// checkHoldExempt checks holdupkeep='s and tricks='s '|'-separated card names (azmcts Options.HoldUpkeepExempt,
+// TricksCards, passed on as written): "" is a bare key, and an empty name (a stray separator) is an error.
 func checkHoldExempt(v string) error {
 	if v == "" {
 		return nil
@@ -557,6 +591,7 @@ func (p *policySpec) azConfig() azmcts.SeatConfig {
 	cfg.Search.AutoPayment = p.AutoPay
 	cfg.ManualTaps = p.ManualTaps
 	cfg.Search.HoldUpkeep, cfg.Search.HoldUpkeepExempt = p.HoldUpkeep, p.HoldExempt
+	cfg.Search.Tricks, cfg.Search.TricksCards = p.Tricks, p.TricksCards
 	cfg.Mulligan = p.Mull
 	cfg.Search.PriorTopK = p.TopK
 	cfg.SimsByKind = p.KSims

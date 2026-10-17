@@ -36,6 +36,9 @@ type Kinds struct {
 	// root and the walk's points enumerate under it. nil (a Kinds built by
 	// hand) is off.
 	hold *holdUpkeep
+	// tricks is Options.Tricks' rule (tricks.go), set by Search like hold.
+	// nil is off.
+	tricks *trickRule
 }
 
 // AllKinds is the spec's searched set.
@@ -51,7 +54,7 @@ func FullKinds() Kinds {
 
 // any reports whether k searches any kind.
 func (k Kinds) any() bool {
-	k.chooseMax, k.hold = 0, nil
+	k.chooseMax, k.hold, k.tricks = 0, nil, nil
 	return k != Kinds{}
 }
 
@@ -249,8 +252,9 @@ type Options struct {
 	// its points are enumerated in full, ranked by the network prior on its
 	// own view and cut to PriorTopK, as the searching seat's are
 	// (Stats.PriorTopK* count them too). With HoldUpkeep, the opponent's own
-	// empty-stack upkeep and draw hold its casts as the searching seat's do.
-	// None of these changes any flag's effect on the searching seat's own
+	// empty-stack upkeep and draw hold its casts as the searching seat's do,
+	// and with Tricks its combat tricks and counterspells are gated as the
+	// searching seat's are. None of these changes any flag's effect on the searching seat's own
 	// decisions.
 	OpponentMirror bool
 
@@ -303,6 +307,41 @@ type Options struct {
 	// spaces, and empty names are ignored. Empty by default; needs
 	// HoldUpkeep.
 	HoldUpkeepExempt string
+
+	// Tricks (DraftZero) casts combat tricks only where they do something
+	// and only on the right side (tricks.go), for draft-zero-report
+	// docs/038: of 122 combat tricks none was cast after attackers were
+	// declared, and 8 of 10 wrong-side spell targets were forced casts. A
+	// gated card's (TricksCards, by default DefaultTricks: FDN's pumps,
+	// protection spells and Fleeting Flight) cast is a candidate only with
+	// something on the stack, or from declare attackers through combat
+	// damage once a creature is attacking; a card that grants evasion
+	// (Fleeting Flight) also at its controller's own beginning of combat. A
+	// gated Charm with a mode that is no trick (Goblin Surprise's tokens) is
+	// cast freely and its trick modes are gated at its modes decision. Side
+	// checks: a gated card's cast is no candidate when no permanent of its
+	// caster's is a legal target (with no target of its own, when the caster
+	// controls no creature), and at its target decision the opponents'
+	// options are dropped when one of the caster's is offered; a
+	// counterspell (SP$ Counter with TargetType$ Spell, found by script) is
+	// no candidate unless an opponent's spell is a legal target, and at its
+	// target decision the caster's own spells are dropped when an opponent's
+	// is offered. The candidates are filtered before they are capped, at the
+	// root and at the searching seat's in-walk points, and at an opponent's
+	// (OpponentNodes) under OpponentMirror only; a bot answer the rule drops
+	// is outside the candidates and pass (a priority decision) or the first
+	// kept options (a target or modes decision) is played in its place.
+	// Stats.TricksGated and TricksSide count the roots it changed,
+	// TricksBot the replaced bot answers there, TricksWalk and TricksOpp the
+	// in-walk decisions. It composes with HoldUpkeep (each drops what it
+	// drops). Off (the default), every candidate list and every answer is as
+	// before.
+	Tricks bool
+	// TricksCards replaces DefaultTricks: card names separated by '|' (a
+	// card matches when any face's name is listed; each name trimmed of
+	// spaces, empty names ignored). Empty is DefaultTricks; needs Tricks.
+	// Counterspells are found by script whatever the list.
+	TricksCards string
 }
 
 // DiscountUnit is what one step of the backup discount counts.
@@ -431,7 +470,8 @@ type Stats struct {
 
 	// The walk's cost counters. They count work, not outcomes: the node
 	// cache (Options.NodeCache) changes them, and EnvSteps above and
-	// HeldUpkeepWalk and HeldUpkeepOpp below, and nothing else in Stats (a
+	// HeldUpkeepWalk, HeldUpkeepOpp, TricksWalk and TricksOpp below, and
+	// nothing else in Stats (a
 	// stored point records the Truncated and PriorFallbacks producing it
 	// counted, so those stay exact).
 	Plays       int // searched submits (Env.Play), a discarded simulation's included
@@ -503,6 +543,21 @@ type Stats struct {
 	HeldUpkeepBot  int
 	HeldUpkeepWalk int
 	HeldUpkeepOpp  int
+
+	// TricksGated counts root decisions at which Options.Tricks' timing gate
+	// dropped a candidate, TricksSide those at which a side check did (a
+	// cast, or a target option), each 0 or 1 per Search, searched or then
+	// skipped alike. TricksBot counts the roots whose bot answer the rule
+	// dropped, so pass or the first kept options were played in its place
+	// (0 or 1 per Search). TricksWalk and TricksOpp count the searching
+	// seat's and a mirrored opponent's in-walk decisions the rule changed (a
+	// dropped candidate or a replaced walk-bot answer), walk work like
+	// HeldUpkeepWalk. All stay 0 with the option off.
+	TricksGated int
+	TricksSide  int
+	TricksBot   int
+	TricksWalk  int
+	TricksOpp   int
 }
 
 // The searched kinds, indexing Stats' per-kind breakdowns.
@@ -648,6 +703,11 @@ func (s *Stats) Add(o Stats) {
 	s.HeldUpkeepBot += o.HeldUpkeepBot
 	s.HeldUpkeepWalk += o.HeldUpkeepWalk
 	s.HeldUpkeepOpp += o.HeldUpkeepOpp
+	s.TricksGated += o.TricksGated
+	s.TricksSide += o.TricksSide
+	s.TricksBot += o.TricksBot
+	s.TricksWalk += o.TricksWalk
+	s.TricksOpp += o.TricksOpp
 	for x := range s.ExtraSearched {
 		s.ExtraSearched[x] += o.ExtraSearched[x]
 		s.ExtraPoints[x] += o.ExtraPoints[x]

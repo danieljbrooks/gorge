@@ -180,3 +180,53 @@ func TestParseHoldUpkeep(t *testing.T) {
 		}
 	}
 }
+
+// :tricks[=NAMES] sets azmcts Options.Tricks (and TricksCards, as written; "" is the default list) on az and prior
+// seats, composes with :holdupkeep, and is refused on the bots; an empty name is an error. Without the key nothing
+// changes.
+func TestParseTricks(t *testing.T) {
+	m := policynet.NewModel(policynet.TableRows, 4, 3, rand.New(rand.NewPCG(1, 2)))
+	m.InitValue(2, rand.New(rand.NewPCG(3, 4)))
+	net := filepath.Join(t.TempDir(), "prior.gpol")
+	if err := m.SaveCheckpoint(net); err != nil {
+		t.Fatal(err)
+	}
+	prior := "prior:net=" + net
+	for _, tc := range []struct {
+		spec   string
+		tricks bool
+		cards  string
+		hold   bool
+	}{
+		{"az:sims=8", false, "", false},
+		{"az:sims=8:autopay:holdupkeep", false, "", true},
+		{"az:sims=8:autopay:tricks", true, "", false},
+		{"az:sims=200:tricks:autopay:oppnodes:oppfull:morekinds:topk=4:cpuct=0.25:holdupkeep", true, "", true},
+		{"az:sims=8:tricks=Giant Growth", true, "Giant Growth", false},
+		{"az:sims=8:autopay:tricks=Giant Growth|Fleeting Flight|An Offer You Can't Refuse:mull", true, "Giant Growth|Fleeting Flight|An Offer You Can't Refuse", false},
+		{prior + ":autopay:tricks", true, "", false},
+		{prior, false, "", false},
+	} {
+		p, err := parsePolicy(tc.spec)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.spec, err)
+		}
+		cfg := p.azConfig()
+		if p.Tricks != tc.tricks || cfg.Search.Tricks != tc.tricks || p.TricksCards != tc.cards || cfg.Search.TricksCards != tc.cards || cfg.Search.HoldUpkeep != tc.hold {
+			t.Fatalf("%s: tricks %v %q (config %v %q, holdupkeep %v), want %v %q (holdupkeep %v)", tc.spec, p.Tricks, p.TricksCards,
+				cfg.Search.Tricks, cfg.Search.TricksCards, cfg.Search.HoldUpkeep, tc.tricks, tc.cards, tc.hold)
+		}
+		if cfg.ManualTaps || !cfg.Search.Kinds.Priority || cfg.Search.HoldUpkeepExempt != "" {
+			t.Fatalf("%s: tricks changed another setting: %+v", tc.spec, cfg)
+		}
+		if _, err := p.seat(7); err != nil {
+			t.Fatalf("%s: %v", tc.spec, err)
+		}
+	}
+	for _, bad := range []string{"bot:tricks", "bot:autopay:tricks", "random:tricks", "sbtactical:tricks",
+		"az:tricks=Giant Growth|", "az:tricks=|Giant Growth", "az:tricks=Giant Growth||Sure Strike", "az:tricks= "} {
+		if _, err := parsePolicy(bad); err == nil {
+			t.Fatalf("%s parsed", bad)
+		}
+	}
+}

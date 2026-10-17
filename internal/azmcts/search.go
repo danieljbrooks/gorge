@@ -156,6 +156,8 @@ func (o Options) Validate(net *policynet.Model) error {
 		return fmt.Errorf("azmcts: forced-playout k %g must be finite and >= 0 (0 is off)", o.ForcedK)
 	case o.HoldUpkeepExempt != "" && !o.HoldUpkeep:
 		return errors.New("azmcts: HoldUpkeepExempt needs HoldUpkeep")
+	case o.TricksCards != "" && !o.Tricks:
+		return errors.New("azmcts: TricksCards needs Tricks")
 	}
 	if net != nil {
 		if !net.HasValue() {
@@ -196,8 +198,10 @@ func countTopK(st *Stats, ranked bool, before int) {
 // src for a world. If every simulation fails, the bot's intent is played and
 // Stats.AllFailed is 1. (Under Options.HoldUpkeep a bot intent that casts a
 // held spell is replaced by pass on each of these paths,
-// Stats.HeldUpkeepBot.) The error return is reserved for misconfiguration
-// (invalid options or network, a missing root field or source).
+// Stats.HeldUpkeepBot; under Options.Tricks one the rule drops by pass or
+// the first kept options, Stats.TricksBot.) The error return is reserved
+// for misconfiguration (invalid options or network, a missing root field or
+// source).
 //
 // net nil is generation 0: a uniform prior and the heuristic leaf. With a
 // live ctx the result is a pure function of (root position, bot answer, net,
@@ -247,11 +251,15 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 	if opts.HoldUpkeep {
 		kinds.hold = newHoldUpkeep(opts.HoldUpkeepExempt)
 	}
+	if opts.Tricks {
+		kinds.tricks = newTrickRule(opts.TricksCards)
+	}
 	cands, kind, why, ok, cut, botFound := rootCands(root.Observer, root, kinds, limit, opts.AutoPayment, &enumBoard)
 	res.Kind = kind
 	// heldBot: the bot's answer is a cast the rule holds, outside the held
 	// candidates; pass is played in its place wherever the bot's answer
-	// would be (heldAnswer).
+	// would be (heldAnswer). Options.Tricks then does the same for what it
+	// drops (trickRule.answer), from the answer HoldUpkeep left.
 	heldBot := false
 	if h := kinds.hold; h != nil {
 		if h.dropped > 0 {
@@ -260,6 +268,18 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 		if pass, held := h.heldAnswer(root.Engine, root.Decision, root.Bot); held {
 			res.Intent, heldBot = pass, true
 			res.Stats.HeldUpkeepBot = 1
+		}
+	}
+	if tr := kinds.tricks; tr != nil {
+		if tr.gatedN > 0 {
+			res.Stats.TricksGated = 1
+		}
+		if tr.sideN > 0 {
+			res.Stats.TricksSide = 1
+		}
+		if alt, dropped := tr.answer(root.Engine, root.Decision, res.Intent); dropped {
+			res.Intent, heldBot = alt, true
+			res.Stats.TricksBot = 1
 		}
 	}
 	if cut {
@@ -329,7 +349,7 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 	if opts.OpponentNodes {
 		cfg.oppNodes = true
 		if opts.OpponentMirror {
-			cfg.oppAutoPay, cfg.oppTopK, cfg.oppHold = opts.AutoPayment, topK, opts.HoldUpkeep
+			cfg.oppAutoPay, cfg.oppTopK, cfg.oppHold, cfg.oppTricks = opts.AutoPayment, topK, opts.HoldUpkeep, opts.Tricks
 		}
 		cfg.oppForks = make([]*searchprobe.Forker, len(root.Engine.G.Players))
 		for p := range cfg.oppForks {

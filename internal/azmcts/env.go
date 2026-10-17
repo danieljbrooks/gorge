@@ -83,6 +83,10 @@ type walkConfig struct {
 	// draw (oppPoint), and their walk bots' held casts are passed
 	// (advance); without it they enumerate with no hold.
 	oppHold bool
+	// oppTricks is OpponentMirror with Tricks: the other seats' points
+	// enumerate under kinds.tricks (oppTricksRule) and their walk bots'
+	// dropped answers are replaced (advance), as the seat's are.
+	oppTricks bool
 }
 
 // oppHoldRule is the HoldUpkeep rule the other seats' points enumerate
@@ -90,6 +94,15 @@ type walkConfig struct {
 func (c *walkConfig) oppHoldRule() *holdUpkeep {
 	if c.oppHold {
 		return c.kinds.hold
+	}
+	return nil
+}
+
+// oppTricksRule is oppHoldRule's twin for Options.Tricks: kinds.tricks
+// under oppTricks, nil (off) otherwise.
+func (c *walkConfig) oppTricksRule() *trickRule {
+	if c.oppTricks {
+		return c.kinds.tricks
 	}
 	return nil
 }
@@ -426,8 +439,8 @@ func (e *engineEnv) Play(k Key) (pt *Point, err error) {
 // as capped.
 //
 // Counters written here (EnvSteps, PriorFallbacks, HeldUpkeepWalk,
-// HeldUpkeepOpp) are written as the walk goes, so a simulation discarded
-// later still contributes them.
+// HeldUpkeepOpp, TricksWalk, TricksOpp) are written as the walk goes, so a
+// simulation discarded later still contributes them.
 func (e *engineEnv) advance() (*Point, error) {
 	for {
 		g := e.e.G
@@ -482,18 +495,26 @@ func (e *engineEnv) advance() (*Point, error) {
 			// Options.HoldUpkeep: Stats.HeldUpkeepWalk counts the decisions
 			// the rule changes, a dropped candidate or (heldAnswer) a bot
 			// answer that casts a held spell, outside the held candidates,
-			// replaced by pass.
-			hold := e.cfg.kinds.hold
-			drops := hold.drops()
+			// replaced by pass. Options.Tricks: Stats.TricksWalk, the same
+			// for what it drops (trickRule.answer).
+			hold, tricks := e.cfg.kinds.hold, e.cfg.kinds.tricks
+			drops, tdrops := hold.drops(), tricks.drops()
 			cands, kind, _, ok, cut := enumerateCutInto(e.obs, e.e, pd, in, e.cfg.kinds, e.cfg.enumLimit(), e.cfg.autoPayment, e.cfg.enumBoard)
 			if !ok {
 				if pass, held := hold.heldAnswer(e.e, pd, in); held {
 					in = pass
 					hold.count()
 				}
+				if alt, dropped := tricks.answer(e.e, pd, in); dropped {
+					in = alt
+					tricks.count()
+				}
 			}
 			if hold.drops() != drops {
 				e.cfg.stats.HeldUpkeepWalk++
+			}
+			if tricks.drops() != tdrops {
+				e.cfg.stats.TricksWalk++
 			}
 			if ok {
 				if cut {
@@ -524,18 +545,26 @@ func (e *engineEnv) advance() (*Point, error) {
 				return pt, nil
 			}
 		} else if e.cfg.oppNodes {
-			// The opponent's twin (Stats.HeldUpkeepOpp), under oppHold only.
-			hold := e.cfg.oppHoldRule()
-			drops := hold.drops()
+			// The opponent's twin (Stats.HeldUpkeepOpp, TricksOpp), under
+			// oppHold and oppTricks only.
+			hold, tricks := e.cfg.oppHoldRule(), e.cfg.oppTricksRule()
+			drops, tdrops := hold.drops(), tricks.drops()
 			pt := e.oppPoint(pd, in)
 			if pt == nil {
 				if pass, held := hold.heldAnswer(e.e, pd, in); held {
 					in = pass
 					hold.count()
 				}
+				if alt, dropped := tricks.answer(e.e, pd, in); dropped {
+					in = alt
+					tricks.count()
+				}
 			}
 			if hold.drops() != drops {
 				e.cfg.stats.HeldUpkeepOpp++
+			}
+			if tricks.drops() != tdrops {
+				e.cfg.stats.TricksOpp++
 			}
 			if pt != nil {
 				return pt, nil
@@ -583,7 +612,9 @@ const oppKeyPrefix = "opp:"
 // is (Stats.OppPayPoints). Under oppHold (OpponentMirror with HoldUpkeep)
 // the opponent's own empty-stack upkeep and draw hold its casts, as the
 // searching seat's do (advance counts Stats.HeldUpkeepOpp, and passes in
-// place of a held cast the walk bot answers). Every key names its objects
+// place of a held cast the walk bot answers); under oppTricks (with Tricks)
+// its tricks and counterspells are gated the same way (Stats.TricksOpp).
+// Every key names its objects
 // by card name (nameKeys with nothing known at the root) behind
 // oppKeyPrefix. The prior is the network's on the OPPONENT's redacted view
 // (priors projects pd.Player's), uniform without one; under oppTopK
@@ -597,7 +628,7 @@ func (e *engineEnv) oppPoint(pd *decision.Decision, in decision.Intent) *Point {
 		return nil
 	}
 	autoPay, topK, kinds := e.cfg.oppAutoPay, e.cfg.oppTopK, e.cfg.kinds
-	kinds.hold = e.cfg.oppHoldRule()
+	kinds.hold, kinds.tricks = e.cfg.oppHoldRule(), e.cfg.oppTricksRule()
 	cands, kind, _, ok, cut := enumerateCutInto(obs, e.e, pd, in, kinds, e.cfg.oppEnumLimit(), autoPay, e.cfg.enumBoard)
 	if !ok {
 		return nil

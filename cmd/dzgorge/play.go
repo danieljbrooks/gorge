@@ -104,6 +104,10 @@ type azAgg struct {
 	// bot answer was a held cast and played as pass (HeldUpkeepBot), and the in-walk decisions it changed, the
 	// searching seat's and a mirrored opponent's (HeldUpkeepWalk, HeldUpkeepOpp).
 	heldUpkeep, heldUpkeepBot, heldUpkeepWalk, heldUpkeepOpp atomic.Int64
+	// :tricks: root decisions at which its timing gate, or a side check, dropped a candidate (azmcts
+	// Stats.TricksGated, TricksSide), roots whose bot answer it dropped and replaced (TricksBot), and the in-walk
+	// decisions it changed, the searching seat's and a mirrored opponent's (TricksWalk, TricksOpp).
+	tricksGated, tricksSide, tricksBot, tricksWalk, tricksOpp atomic.Int64
 }
 
 var azStats azAgg
@@ -127,6 +131,11 @@ func (a *azAgg) watch(d azmcts.Diag) {
 	a.heldUpkeepBot.Add(int64(d.Stats.HeldUpkeepBot))
 	a.heldUpkeepWalk.Add(int64(d.Stats.HeldUpkeepWalk))
 	a.heldUpkeepOpp.Add(int64(d.Stats.HeldUpkeepOpp))
+	a.tricksGated.Add(int64(d.Stats.TricksGated))
+	a.tricksSide.Add(int64(d.Stats.TricksSide))
+	a.tricksBot.Add(int64(d.Stats.TricksBot))
+	a.tricksWalk.Add(int64(d.Stats.TricksWalk))
+	a.tricksOpp.Add(int64(d.Stats.TricksOpp))
 	a.topKPoints.Add(int64(d.Stats.PriorTopKPoints))
 	a.topKCuts.Add(int64(d.Stats.PriorTopKCuts))
 	a.topKBefore.Add(int64(d.Stats.PriorTopKBefore))
@@ -660,6 +669,18 @@ func runPlay(args []string) int {
 		sum["az_holdupkeep_bot_passes"] = azStats.heldUpkeepBot.Load()
 		sum["az_holdupkeep_walk"] = azStats.heldUpkeepWalk.Load()
 		sum["az_holdupkeep_opp"] = azStats.heldUpkeepOpp.Load()
+	}
+	if specs[0].Tricks || specs[1].Tricks {
+		// :tricks: root decisions at which the timing gate dropped a gated card's cast or mode
+		// (azmcts Stats.TricksGated) and at which a side check dropped a cast or a target (TricksSide),
+		// searched over what was left or played as the bot's answer; the roots whose bot answer the rule
+		// dropped, played as pass or the first kept options (TricksBot); and the in-walk decisions it
+		// changed, the searching seat's and a mirrored opponent's (TricksWalk, TricksOpp; walk work).
+		sum["az_tricks_gated_roots"] = azStats.tricksGated.Load()
+		sum["az_tricks_side_roots"] = azStats.tricksSide.Load()
+		sum["az_tricks_bot_passes"] = azStats.tricksBot.Load()
+		sum["az_tricks_walk"] = azStats.tricksWalk.Load()
+		sum["az_tricks_opp"] = azStats.tricksOpp.Load()
 	}
 	if specs[0].PCR > 0 || specs[1].PCR > 0 {
 		// :pcr=: searched decisions by side that playout-cap randomization made full (recorded)
