@@ -8,8 +8,8 @@ package main
 //     seat's and its opponent's untapped lands, what it could cast at instant speed and what it chose.
 //   - "target": a target decision of either seat: the stack object it targets for (the top of the stack, or the
 //     spell being cast) and the chosen targets, each an object (name, controller, zone) or a player.
-//   - "stack": each spell and ability on the stack, once, as last seen by a decision (its targets are chosen by
-//     then), written when the game ends: controller, kind, source card, the turn and step it was first seen in,
+//   - "stack": each spell and ability on the stack, once, with its targets as first chosen, written when the game
+//     ends: controller, kind, source card, the turn and step it was first seen in,
 //     whose turn, and its targets.
 //   - "card": each card name the log names, once per file: types, keywords and oracle text.
 //
@@ -84,6 +84,8 @@ type dlTargetLine struct {
 	Options int        `json:"options"`
 	// Offered is every option the decision offered: an object (name, controller, zone, combat) or a player.
 	Offered []dlTarget `json:"offered"`
+	// Search is the seat's search record for this decision, when it searched (else the built-in bot answered).
+	Search *auditSide `json:"search,omitempty"`
 }
 
 type dlStackLine struct {
@@ -372,10 +374,11 @@ func (l *decLog) observe(e *rules.Engine, seat int, d *decision.Decision, in dec
 			l.seen[key] = s
 			l.order = append(l.order, key)
 		}
-		if len(o.Targets) > 0 || s.Targets == nil {
+		// targets as first chosen: a later look (a decision during resolution) may see them after they moved
+		if len(s.Targets) == 0 {
 			s.Targets = l.targets(e, o.Targets)
 		}
-		if len(o.SubTargets) > 0 {
+		if len(s.SubTarget) == 0 && len(o.SubTargets) > 0 {
 			s.SubTarget = l.targets(e, o.SubTargets)
 		}
 	}
@@ -407,6 +410,10 @@ func (l *decLog) observe(e *rules.Engine, seat int, d *decision.Decision, in dec
 					t.Chosen = append(t.Chosen, dlTarget{Player: &p})
 				}
 			}
+		}
+		if sr := l.last[seat]; sr != nil && sr.Sequence == d.Seq {
+			tr := trimRecord(sr)
+			t.Search = &tr
 		}
 		declogW.write(t)
 	}
