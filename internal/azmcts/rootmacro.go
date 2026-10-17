@@ -114,12 +114,14 @@ func rootCands(obs *searchprobe.Collector, root Root, kinds Kinds, limit int, au
 		if !IsMacroKey(m.Key) || len(m.Steps) == 0 || have[m.Key] {
 			continue
 		}
-		if holding && kinds.hold.holdsMacro(e, m) {
-			kinds.hold.count()
-			continue
-		}
 		in, err := m.Steps[0].Intent(e, d)
 		if err != nil {
+			continue
+		}
+		// Counted only for a macro the root would offer (its first step
+		// is offered here).
+		if holding && kinds.hold.holdsMacro(e, m) {
+			kinds.hold.count()
 			continue
 		}
 		have[m.Key] = true

@@ -278,18 +278,23 @@ type Options struct {
 	// options (mana floating; flashback and other alternative-cost casts
 	// included) are dropped before the candidates are capped, and so is a
 	// root macro with a cast step -- while pass, land plays, activated
-	// abilities and every other candidate stay (holdupkeep.go). No
-	// sorcery-speed cast is legal there, so every cast dropped is an
-	// instant-speed spell's, and the same cast in the first main phase has
-	// the same lands untapped and the same response windows, and has seen the
-	// draw (an upkeep cast has not) and the land drop (neither has). It applies at the root (a root left with fewer than
-	// two candidates is skipped and the bot's answer, there a pass, is
-	// played) and at the searching seat's in-walk points; at an opponent's
-	// points (OpponentNodes) only under OpponentMirror, at the opponent's own
-	// upkeep and draw. A decision with something on the stack, any other
-	// step, and another player's turn are unaffected. Stats.HeldUpkeep counts
-	// the roots it changed. Off (the default), every candidate list is as
-	// before.
+	// abilities, the "cast"-kind special actions that cast no spell
+	// (Foretell, Suspend, Plot) and every other candidate stay
+	// (holdupkeep.go). No sorcery-speed cast is legal there, so every cast
+	// dropped is an instant-speed spell's, and the same cast in the first
+	// main phase has the same lands untapped and the same response windows,
+	// and has seen the draw (an upkeep cast has not) and the land drop
+	// (neither has). It applies at the root and at the searching seat's
+	// in-walk points; at an opponent's points (OpponentNodes) only under
+	// OpponentMirror, at the opponent's own upkeep and draw. A root left with
+	// fewer than two candidates is skipped and the bot's answer played, there
+	// a pass. A bot answer that is itself a held cast is outside the
+	// candidates, and pass is played in its place, at the root
+	// (Stats.HeldUpkeepBot) and in the walk. A decision with something on
+	// the stack, any other step, and another player's turn are unaffected.
+	// Stats.HeldUpkeep counts the roots it changed, HeldUpkeepWalk and
+	// HeldUpkeepOpp the in-walk decisions. Off (the default), every
+	// candidate list and every answer is as before.
 	HoldUpkeep bool
 	// HoldUpkeepExempt lists card names whose casts HoldUpkeep never drops,
 	// separated by '|' (a string, so Options stays comparable): a card
@@ -425,9 +430,10 @@ type Stats struct {
 	OppExpanded int
 
 	// The walk's cost counters. They count work, not outcomes: the node
-	// cache (Options.NodeCache) changes them, and EnvSteps above, and
-	// nothing else in Stats (a stored point records the Truncated and
-	// PriorFallbacks producing it counted, so those stay exact).
+	// cache (Options.NodeCache) changes them, and EnvSteps above and
+	// HeldUpkeepWalk and HeldUpkeepOpp below, and nothing else in Stats (a
+	// stored point records the Truncated and PriorFallbacks producing it
+	// counted, so those stay exact).
 	Plays       int // searched submits (Env.Play), a discarded simulation's included
 	ReplayPlays int // Plays along an edge the tree already held (expanded, or ended there before)
 	ReplaySteps int // the EnvSteps spent inside those ReplayPlays: re-walking known tree edges
@@ -482,10 +488,21 @@ type Stats struct {
 	PrunedVisits   int
 	PrunedChildren int
 
-	// HeldUpkeep counts root decisions at which Options.HoldUpkeep dropped
-	// at least one candidate (0 or 1 per Search), searched or then skipped
-	// for too few candidates alike. Always 0 with the option off.
-	HeldUpkeep int
+	// HeldUpkeep counts root decisions at which Options.HoldUpkeep dropped at
+	// least one candidate (0 or 1 per Search), searched or then skipped for too
+	// few candidates alike. HeldUpkeepBot counts the roots at which the bot's
+	// answer was a held cast, outside the candidates, so pass was played in its
+	// place (0 or 1 per Search; HeldUpkeep is then 1 too whenever the root was
+	// enumerated). HeldUpkeepWalk counts the searching seat's in-walk decisions
+	// at which the rule dropped a candidate or passed in place of the walk
+	// bot's held cast, and HeldUpkeepOpp the opponent's (OpponentMirror only),
+	// a discarded simulation's included. Both are counted as the walk
+	// enumerates, so the node cache, which resumes stored walks, lowers them as
+	// it does EnvSteps. All stay 0 with the option off.
+	HeldUpkeep     int
+	HeldUpkeepBot  int
+	HeldUpkeepWalk int
+	HeldUpkeepOpp  int
 }
 
 // The searched kinds, indexing Stats' per-kind breakdowns.
@@ -628,6 +645,9 @@ func (s *Stats) Add(o Stats) {
 	s.PrunedVisits += o.PrunedVisits
 	s.PrunedChildren += o.PrunedChildren
 	s.HeldUpkeep += o.HeldUpkeep
+	s.HeldUpkeepBot += o.HeldUpkeepBot
+	s.HeldUpkeepWalk += o.HeldUpkeepWalk
+	s.HeldUpkeepOpp += o.HeldUpkeepOpp
 	for x := range s.ExtraSearched {
 		s.ExtraSearched[x] += o.ExtraSearched[x]
 		s.ExtraPoints[x] += o.ExtraPoints[x]

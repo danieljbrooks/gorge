@@ -412,7 +412,8 @@ func (s *Seat) DigestFree() bool { return true }
 
 // decidePrior is the PriorOnly seat's decision: the candidates Search would
 // build, answered by the argmax of the network prior (ties on the lowest
-// index). A decision Search would not search is the bot's.
+// index). A decision Search would not search is the bot's (under
+// Options.HoldUpkeep, pass in place of a held cast).
 func (s *Seat) decidePrior(ctx context.Context, env searchseat.Env, d decision.Decision, botIn decision.Intent) (decision.Intent, error) {
 	obs := searchprobe.NewCollector(d.Player)
 	opts := s.cfg.Search
@@ -423,7 +424,9 @@ func (s *Seat) decidePrior(ctx context.Context, env searchseat.Env, d decision.D
 		return decision.Intent{}, err
 	}
 	if len(res.Candidates) < 2 {
-		return botIn, nil
+		// Search's answer: the bot's, or under Options.HoldUpkeep pass in
+		// place of a held cast (Stats.HeldUpkeepBot).
+		return res.Intent, nil
 	}
 	best := 0
 	for i, p := range res.Prior {

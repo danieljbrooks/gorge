@@ -194,7 +194,9 @@ func countTopK(st *Stats, ranked bool, before int) {
 // searched kind, fewer than two candidates, a bot answer outside the
 // candidate vocabulary, Sims <= 0 -- returns the bot's intent without asking
 // src for a world. If every simulation fails, the bot's intent is played and
-// Stats.AllFailed is 1. The error return is reserved for misconfiguration
+// Stats.AllFailed is 1. (Under Options.HoldUpkeep a bot intent that casts a
+// held spell is replaced by pass on each of these paths,
+// Stats.HeldUpkeepBot.) The error return is reserved for misconfiguration
 // (invalid options or network, a missing root field or source).
 //
 // net nil is generation 0: a uniform prior and the heuristic leaf. With a
@@ -247,8 +249,18 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 	}
 	cands, kind, why, ok, cut, botFound := rootCands(root.Observer, root, kinds, limit, opts.AutoPayment, &enumBoard)
 	res.Kind = kind
-	if kinds.hold != nil && kinds.hold.dropped > 0 {
-		res.Stats.HeldUpkeep = 1
+	// heldBot: the bot's answer is a cast the rule holds, outside the held
+	// candidates; pass is played in its place wherever the bot's answer
+	// would be (heldAnswer).
+	heldBot := false
+	if h := kinds.hold; h != nil {
+		if h.dropped > 0 {
+			res.Stats.HeldUpkeep = 1
+		}
+		if pass, held := h.heldAnswer(root.Engine, root.Decision, root.Bot); held {
+			res.Intent, heldBot = pass, true
+			res.Stats.HeldUpkeepBot = 1
+		}
 	}
 	if cut {
 		res.Stats.Truncated, res.Stats.RootTruncated = 1, 1
@@ -359,7 +371,7 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 		played = res.Target
 	}
 	res.Choice = choose(played, opts.Sample, rng)
-	if res.Choice != 0 || !botFound {
+	if res.Choice != 0 || !botFound || heldBot {
 		res.Intent = cands[res.Choice].in
 	}
 	return res, nil

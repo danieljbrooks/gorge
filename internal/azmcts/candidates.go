@@ -560,7 +560,8 @@ type paymentVocab struct {
 
 // paymentVocabulary is d's vocabulary. Where hold is on (Options.HoldUpkeep:
 // the active player's empty-stack upkeep or draw) it leaves out every held
-// cast, the payment actions and the legacy "cast" options alike.
+// cast, the payment actions and the legacy "cast" options alike; obs observes
+// exactly what it observes without the rule.
 func paymentVocabulary(obs *searchprobe.Collector, e *rules.Engine, d *decision.Decision, hold *holdUpkeep, scratch *boardScratch) (paymentVocab, SkipReason, bool) {
 	if _, err := obs.ObserveDecision(e, d); err != nil {
 		return paymentVocab{}, SkipTranslate, false
@@ -577,6 +578,12 @@ func paymentVocabulary(obs *searchprobe.Collector, e *rules.Engine, d *decision.
 			continue
 		}
 		if holding && hold.holds(e, a.Cast.Object) {
+			// The held cast still introduces its card to obs, as it does
+			// without the rule, so every later key is the one it would be
+			// without it.
+			if _, err := paymentActs(obs, e, d, a); err != nil {
+				return paymentVocab{}, SkipTranslate, false
+			}
 			held = true
 			continue
 		}

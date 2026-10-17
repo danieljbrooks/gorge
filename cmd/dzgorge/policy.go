@@ -67,17 +67,20 @@ import (
 //	                             that casts a spell (an instant, a flash card, a flashback or other
 //	                             alternative-cost cast; a payment cast and a cast with mana floating
 //	                             alike) is dropped, at the seat's root and at its points inside a
-//	                             simulation; pass, abilities and the rest stay. The same cast in the first
-//	                             main phase has the same lands untapped, and has seen the draw and the
-//	                             land drop.
+//	                             simulation; pass, abilities, Foretell and Suspend (special actions, no
+//	                             spell cast) and the rest stay. The same cast in the first main phase has
+//	                             the same lands untapped, and has seen the draw and the land drop.
 //	                             A root left with fewer than two candidates plays the bot's answer (there
-//	                             a pass) unsearched; play's summary counts the roots changed as
-//	                             az_holdupkeep_roots. With :oppnodes:oppfull the opponent's points hold its
-//	                             casts in its own upkeep and draw too. =NAMES exempts cards by name,
-//	                             '|'-separated (=Opt|Brainstorm; a card matches by any face's name; a
-//	                             name may not hold a colon). Any step with something on the stack, and
-//	                             every other turn's, is unaffected. An az and prior key (azmcts
-//	                             Options.HoldUpkeep, HoldUpkeepExempt)
+//	                             a pass) unsearched, and a bot answer that is itself a held cast is played
+//	                             as pass, at the root and inside a simulation; play's summary counts the
+//	                             roots changed as az_holdupkeep_roots, those passed as
+//	                             az_holdupkeep_bot_passes, and the decisions changed inside simulations
+//	                             as az_holdupkeep_walk and az_holdupkeep_opp. With :oppnodes:oppfull the
+//	                             opponent's points hold its casts in its own upkeep and draw too. =NAMES
+//	                             exempts cards by name, '|'-separated (=Opt|Brainstorm; a card matches by
+//	                             any face's name; a name may not hold a colon). Any step with something
+//	                             on the stack, and every other turn's, is unaffected. An az and prior key
+//	                             (azmcts Options.HoldUpkeep, HoldUpkeepExempt)
 //	   :topk=K                   the network chooses the candidates: every searched decision (the root
 //	                             and every one inside a simulation) is enumerated in full and the bot's
 //	                             answer is kept with the K-1 others the network's prior ranks highest,
