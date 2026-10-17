@@ -187,6 +187,8 @@ func runPlay(args []string) int {
 		"first (audit.go); needs -audit-out")
 	fs.Float64Var(&auditRate, "audit-rate", 0.1, "share of side A's searched decisions the oracle audits")
 	fs.StringVar(&auditPath, "audit-out", "", "audit JSONL (one line per audited decision)")
+	fs.StringVar(&declogPath, "declog", "", "decision log JSONL for diagnostics (declog.go): instant-speed priority "+
+		"decisions, targets and stack objects of both seats; reads only")
 	fs.Parse(args)
 	tuneGC()
 	if *pprofAddr != "" {
@@ -210,6 +212,14 @@ func runPlay(args []string) int {
 		}
 		defer auditW.close()
 		auditSpec = sp
+	}
+	if declogPath != "" {
+		var err error
+		if declogW, err = newAuditWriter(declogPath); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		defer declogW.close()
 	}
 	if f, err := policynet.ParseFeatureSet(*recFeat); err != nil || f.Diagnostic() {
 		fmt.Fprintf(os.Stderr, "play: -record-features %q: want mz or entity\n", *recFeat)
@@ -712,6 +722,10 @@ func playOne(jb job, specs []*policySpec, dc *deckCache, reg *cards.Registry, ma
 	}
 	cfg.Spare = spare
 	var eng *rules.Engine
+	var dl *decLog
+	if declogW != nil {
+		dl = newDecLog(jb)
+	}
 	var auto [2]bool
 	for s := 0; s < 2; s++ {
 		k := specs[jb.sides[s]]
@@ -738,6 +752,9 @@ func playOne(jb job, specs []*policySpec, dc *deckCache, reg *cards.Registry, ma
 				}
 				rec.MM[seatIdx].observe(eng, !noPaidManaCensus, auto[seatIdx], d, in)
 			}
+			if dl != nil && eng != nil {
+				dl.observe(eng, seatIdx, d, in)
+			}
 			if d.Kind == decision.KMulligan && len(d.Options) > 0 && d.Options[0].Kind != "bottom" &&
 				len(in.Choices) > 0 && optionKind(d, in.Choices[0]) == "mulligan" {
 				rec.Mull[seatIdx]++
@@ -748,6 +765,9 @@ func playOne(jb job, specs []*policySpec, dc *deckCache, reg *cards.Registry, ma
 	}
 	t0 := time.Now()
 	o, e, err := gbench.PlayGame(cfg, seats, maxTurns, maxIntents, hooks)
+	if dl != nil {
+		dl.finish()
+	}
 	rec.MS = float64(time.Since(t0).Microseconds()) / 1000
 	rec.Turns, rec.Intents, rec.Starter = o.Turns, o.Intents, o.Starter
 	switch {
