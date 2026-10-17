@@ -89,7 +89,9 @@ func (r Root) fullRoot() bool { return len(r.Macros) > 0 || r.BotKey != "" || r.
 // under NoBot or with BotKey unmatched, no bot candidate (the natural order:
 // Pass first) -- instead of skipping a decision whose bot answer is outside
 // the vocabulary. botFound reports whether candidate 0 is the bot's. Any
-// other root enumerates as before (enumerateCut).
+// other root enumerates as before (enumerateCut). Under Options.HoldUpkeep
+// (kinds.hold) the full root's vocabulary holds its casts as every
+// enumeration does, and a macro with a held cast step is left out too.
 func rootCands(obs *searchprobe.Collector, root Root, kinds Kinds, limit int, autoPayment bool, scratch *boardScratch) (cands []cand, kind string, why SkipReason, ok, cut, botFound bool) {
 	e, d := root.Engine, root.Decision
 	if !root.fullRoot() || !autoPayment || d.Kind != decision.KPriority || !kinds.Priority {
@@ -97,10 +99,11 @@ func rootCands(obs *searchprobe.Collector, root Root, kinds Kinds, limit int, au
 		return cands, kind, why, ok, cut, ok
 	}
 	kind = "priority"
-	v, why, ok := paymentVocabulary(obs, e, d, scratch)
+	v, why, ok := paymentVocabulary(obs, e, d, kinds.hold, scratch)
 	if !ok {
 		return nil, kind, why, false, false, false
 	}
+	holding := kinds.hold.on(e, d)
 	all := v.all
 	have := make(map[Key]bool, len(all)+len(root.Macros)) // membership only -- never ranged.
 	for _, c := range all {
@@ -109,6 +112,10 @@ func rootCands(obs *searchprobe.Collector, root Root, kinds Kinds, limit int, au
 	for i := range root.Macros {
 		m := &root.Macros[i]
 		if !IsMacroKey(m.Key) || len(m.Steps) == 0 || have[m.Key] {
+			continue
+		}
+		if holding && kinds.hold.holdsMacro(e, m) {
+			kinds.hold.count()
 			continue
 		}
 		in, err := m.Steps[0].Intent(e, d)

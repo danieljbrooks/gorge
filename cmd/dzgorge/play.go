@@ -100,6 +100,8 @@ type azAgg struct {
 	// Those that would have been rerouted, but whose bot played a land when asked again without its mana
 	// activations: the land drop played first, unsearched (azmcts Stats.LandFirst).
 	landFirst atomic.Int64
+	// :holdupkeep: root decisions whose instant-speed casts the rule dropped (azmcts Stats.HeldUpkeep).
+	heldUpkeep atomic.Int64
 }
 
 var azStats azAgg
@@ -119,6 +121,7 @@ func (a *azAgg) watch(d azmcts.Diag) {
 	a.priorFallbacks.Add(int64(d.Stats.PriorFallbacks))
 	a.botTapRerooted.Add(int64(d.Stats.BotTapRerooted))
 	a.landFirst.Add(int64(d.Stats.LandFirst))
+	a.heldUpkeep.Add(int64(d.Stats.HeldUpkeep))
 	a.topKPoints.Add(int64(d.Stats.PriorTopKPoints))
 	a.topKCuts.Add(int64(d.Stats.PriorTopKCuts))
 	a.topKBefore.Add(int64(d.Stats.PriorTopKBefore))
@@ -641,6 +644,11 @@ func runPlay(args []string) int {
 			sum[side+"_decided_agree"] = tally.decided[i][2]
 		}
 		sum["visit_records_weighted"] = tally.weighted
+	}
+	if specs[0].HoldUpkeep || specs[1].HoldUpkeep {
+		// :holdupkeep: root decisions (own empty-stack upkeep or draw) at which the rule dropped a cast,
+		// searched over what was left or played as the bot's answer (azmcts Stats.HeldUpkeep).
+		sum["az_holdupkeep_roots"] = azStats.heldUpkeep.Load()
 	}
 	if specs[0].PCR > 0 || specs[1].PCR > 0 {
 		// :pcr=: searched decisions by side that playout-cap randomization made full (recorded)

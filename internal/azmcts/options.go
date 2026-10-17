@@ -32,6 +32,10 @@ type Kinds struct {
 	// sets it to Options.Limit; 0 (a Kinds built by hand and passed to an
 	// enumerator directly) reads DefaultOptions' Limit.
 	chooseMax int
+	// hold is Options.HoldUpkeep's rule (holdupkeep.go), set by Search: the
+	// root and the walk's points enumerate under it. nil (a Kinds built by
+	// hand) is off.
+	hold *holdUpkeep
 }
 
 // AllKinds is the spec's searched set.
@@ -47,7 +51,7 @@ func FullKinds() Kinds {
 
 // any reports whether k searches any kind.
 func (k Kinds) any() bool {
-	k.chooseMax = 0
+	k.chooseMax, k.hold = 0, nil
 	return k != Kinds{}
 }
 
@@ -244,8 +248,10 @@ type Options struct {
 	// candidates (Stats.OppPayPoints). With PriorTopK (and a network prior),
 	// its points are enumerated in full, ranked by the network prior on its
 	// own view and cut to PriorTopK, as the searching seat's are
-	// (Stats.PriorTopK* count them too). Neither changes either flag's effect
-	// on the searching seat's own decisions.
+	// (Stats.PriorTopK* count them too). With HoldUpkeep, the opponent's own
+	// empty-stack upkeep and draw hold its casts as the searching seat's do.
+	// None of these changes any flag's effect on the searching seat's own
+	// decisions.
 	OpponentMirror bool
 
 	// ForcedK is KataGo's forced playouts with policy target pruning
@@ -264,6 +270,34 @@ type Options struct {
 	// as before. The az seat sets it only on its full (recorded) searches
 	// (SeatConfig: never on a playout-cap cheap or a decided-game search).
 	ForcedK float64
+
+	// HoldUpkeep (DraftZero) holds instant-speed casts out of the active
+	// player's own upkeep and draw step: at a priority decision of the
+	// active player in its upkeep or draw step with an empty stack, no
+	// candidate casts a spell -- the payment casts and the legacy "cast"
+	// options (mana floating; flashback and other alternative-cost casts
+	// included) are dropped before the candidates are capped, and so is a
+	// root macro with a cast step -- while pass, land plays, activated
+	// abilities and every other candidate stay (holdupkeep.go). No
+	// sorcery-speed cast is legal there, so every cast dropped is an
+	// instant-speed spell's, and the same cast in the first main phase has
+	// the same lands untapped and the same response windows, and has seen the
+	// draw (an upkeep cast has not) and the land drop (neither has). It applies at the root (a root left with fewer than
+	// two candidates is skipped and the bot's answer, there a pass, is
+	// played) and at the searching seat's in-walk points; at an opponent's
+	// points (OpponentNodes) only under OpponentMirror, at the opponent's own
+	// upkeep and draw. A decision with something on the stack, any other
+	// step, and another player's turn are unaffected. Stats.HeldUpkeep counts
+	// the roots it changed. Off (the default), every candidate list is as
+	// before.
+	HoldUpkeep bool
+	// HoldUpkeepExempt lists card names whose casts HoldUpkeep never drops,
+	// separated by '|' (a string, so Options stays comparable): a card
+	// matches when any face's name is listed -- a scry or library-top instant
+	// whose upkeep cast improves the draw, say. Each name is trimmed of
+	// spaces, and empty names are ignored. Empty by default; needs
+	// HoldUpkeep.
+	HoldUpkeepExempt string
 }
 
 // DiscountUnit is what one step of the backup discount counts.
@@ -447,6 +481,11 @@ type Stats struct {
 	ForcedPlayouts int
 	PrunedVisits   int
 	PrunedChildren int
+
+	// HeldUpkeep counts root decisions at which Options.HoldUpkeep dropped
+	// at least one candidate (0 or 1 per Search), searched or then skipped
+	// for too few candidates alike. Always 0 with the option off.
+	HeldUpkeep int
 }
 
 // The searched kinds, indexing Stats' per-kind breakdowns.
@@ -588,6 +627,7 @@ func (s *Stats) Add(o Stats) {
 	s.ForcedPlayouts += o.ForcedPlayouts
 	s.PrunedVisits += o.PrunedVisits
 	s.PrunedChildren += o.PrunedChildren
+	s.HeldUpkeep += o.HeldUpkeep
 	for x := range s.ExtraSearched {
 		s.ExtraSearched[x] += o.ExtraSearched[x]
 		s.ExtraPoints[x] += o.ExtraPoints[x]

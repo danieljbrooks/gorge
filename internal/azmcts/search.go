@@ -154,6 +154,8 @@ func (o Options) Validate(net *policynet.Model) error {
 		return fmt.Errorf("azmcts: unvisited Q %g must be in [0,1]", o.UnvisitedQ)
 	case !(o.ForcedK >= 0) || math.IsInf(o.ForcedK, 1):
 		return fmt.Errorf("azmcts: forced-playout k %g must be finite and >= 0 (0 is off)", o.ForcedK)
+	case o.HoldUpkeepExempt != "" && !o.HoldUpkeep:
+		return errors.New("azmcts: HoldUpkeepExempt needs HoldUpkeep")
 	}
 	if net != nil {
 		if !net.HasValue() {
@@ -238,8 +240,16 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 		res.Intent = root.Bot
 		res.Stats.LandFirst = 1
 	}
+	// HoldUpkeep's rule rides on the kinds every enumeration reads: the
+	// root's here, the walk's through walkConfig.kinds.
+	if opts.HoldUpkeep {
+		kinds.hold = newHoldUpkeep(opts.HoldUpkeepExempt)
+	}
 	cands, kind, why, ok, cut, botFound := rootCands(root.Observer, root, kinds, limit, opts.AutoPayment, &enumBoard)
 	res.Kind = kind
+	if kinds.hold != nil && kinds.hold.dropped > 0 {
+		res.Stats.HeldUpkeep = 1
+	}
 	if cut {
 		res.Stats.Truncated, res.Stats.RootTruncated = 1, 1
 	}
@@ -307,7 +317,7 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 	if opts.OpponentNodes {
 		cfg.oppNodes = true
 		if opts.OpponentMirror {
-			cfg.oppAutoPay, cfg.oppTopK = opts.AutoPayment, topK
+			cfg.oppAutoPay, cfg.oppTopK, cfg.oppHold = opts.AutoPayment, topK, opts.HoldUpkeep
 		}
 		cfg.oppForks = make([]*searchprobe.Forker, len(root.Engine.G.Players))
 		for p := range cfg.oppForks {

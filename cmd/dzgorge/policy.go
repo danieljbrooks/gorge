@@ -62,6 +62,22 @@ import (
 //	                             needs play -workers 1: with more workers the search's floats and walk
 //	                             counters differ from run to run (gonet's caches are shared across the
 //	                             workers' games), as the old binary's own multi-worker runs do
+//	   :holdupkeep[=NAMES]       no instant-speed cast in the seat's own upkeep or draw step: at a priority
+//	                             decision of the active player there with an empty stack, every candidate
+//	                             that casts a spell (an instant, a flash card, a flashback or other
+//	                             alternative-cost cast; a payment cast and a cast with mana floating
+//	                             alike) is dropped, at the seat's root and at its points inside a
+//	                             simulation; pass, abilities and the rest stay. The same cast in the first
+//	                             main phase has the same lands untapped, and has seen the draw and the
+//	                             land drop.
+//	                             A root left with fewer than two candidates plays the bot's answer (there
+//	                             a pass) unsearched; play's summary counts the roots changed as
+//	                             az_holdupkeep_roots. With :oppnodes:oppfull the opponent's points hold its
+//	                             casts in its own upkeep and draw too. =NAMES exempts cards by name,
+//	                             '|'-separated (=Opt|Brainstorm; a card matches by any face's name; a
+//	                             name may not hold a colon). Any step with something on the stack, and
+//	                             every other turn's, is unaffected. An az and prior key (azmcts
+//	                             Options.HoldUpkeep, HoldUpkeepExempt)
 //	   :topk=K                   the network chooses the candidates: every searched decision (the root
 //	                             and every one inside a simulation) is enumerated in full and the bot's
 //	                             answer is kept with the K-1 others the network's prior ranks highest,
@@ -186,6 +202,9 @@ type policySpec struct {
 
 	// ManualTaps is :manualtaps: no payment plans, no bot-tap reroute (azmcts SeatConfig.ManualTaps).
 	ManualTaps bool
+	// HoldUpkeep is :holdupkeep, HoldExempt its =NAMES (azmcts Options.HoldUpkeep, HoldUpkeepExempt).
+	HoldUpkeep bool
+	HoldExempt string
 }
 
 // setBelief gives a :closedlist seat its belief (loaded after the specs are parsed).
@@ -254,6 +273,9 @@ func parsePolicy(s string) (*policySpec, error) {
 			p.AutoPay = true
 		case "manualtaps":
 			p.ManualTaps = true
+		case "holdupkeep":
+			p.HoldUpkeep, p.HoldExempt = true, v
+			err = checkHoldExempt(v)
 		case "mull":
 			p.Mull = botpolicy.MulliganLands
 		case "keep7":
@@ -349,6 +371,9 @@ func parsePolicy(s string) (*policySpec, error) {
 	if p.ManualTaps && !p.searches() {
 		return nil, fmt.Errorf("policy %q: manualtaps is an az and prior key", s)
 	}
+	if p.HoldUpkeep && !p.searches() {
+		return nil, fmt.Errorf("policy %q: holdupkeep is an az and prior key", s)
+	}
 	if err := p.checkPCR(cheapSet); err != nil {
 		return nil, fmt.Errorf("policy %q: %w", s, err)
 	}
@@ -367,6 +392,20 @@ func parsePolicy(s string) (*policySpec, error) {
 		}
 	}
 	return p, nil
+}
+
+// checkHoldExempt checks holdupkeep='s '|'-separated card names (azmcts Options.HoldUpkeepExempt, passed on
+// as written): "" is a bare key, and an empty name (a stray separator) is an error.
+func checkHoldExempt(v string) error {
+	if v == "" {
+		return nil
+	}
+	for _, n := range strings.Split(v, "|") {
+		if strings.TrimSpace(n) == "" {
+			return fmt.Errorf("an empty card name in %q (want NAME|NAME...)", v)
+		}
+	}
+	return nil
 }
 
 // defaultCheapSims is a cheap search's simulations under pcr= without cheap= (DraftZero's
@@ -514,6 +553,7 @@ func (p *policySpec) azConfig() azmcts.SeatConfig {
 	}
 	cfg.Search.AutoPayment = p.AutoPay
 	cfg.ManualTaps = p.ManualTaps
+	cfg.Search.HoldUpkeep, cfg.Search.HoldUpkeepExempt = p.HoldUpkeep, p.HoldExempt
 	cfg.Mulligan = p.Mull
 	cfg.Search.PriorTopK = p.TopK
 	cfg.SimsByKind = p.KSims

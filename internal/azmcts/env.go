@@ -78,6 +78,10 @@ type walkConfig struct {
 	// OpponentMirror, 0 otherwise (oppEnumLimit).
 	oppAutoPay bool
 	oppTopK    int
+	// oppHold is OpponentMirror with HoldUpkeep: the other seats' points
+	// enumerate under kinds.hold, each at its own upkeep and draw
+	// (oppPoint); without it they enumerate with no hold.
+	oppHold bool
 }
 
 // priorNet is the network in-walk priors read: nil under uniformPrior.
@@ -536,7 +540,9 @@ const oppKeyPrefix = "opp:"
 // never a candidate. Under oppAutoPay (OpponentMirror with AutoPayment) the
 // opponent's walk bot pays automatically instead and a priority point is
 // the payment vocabulary (paymentPriorityCands), as the searching seat's
-// is (Stats.OppPayPoints). Every key names its objects by card name
+// is (Stats.OppPayPoints). Under oppHold (OpponentMirror with HoldUpkeep)
+// the opponent's own empty-stack upkeep and draw hold its casts, as the
+// searching seat's do. Every key names its objects by card name
 // (nameKeys with nothing known at the root) behind oppKeyPrefix. The prior
 // is the network's on the OPPONENT's redacted view (priors projects
 // pd.Player's), uniform without one; under oppTopK (OpponentMirror with
@@ -549,8 +555,11 @@ func (e *engineEnv) oppPoint(pd *decision.Decision, in decision.Intent) *Point {
 	if obs == nil {
 		return nil
 	}
-	autoPay, topK := e.cfg.oppAutoPay, e.cfg.oppTopK
-	cands, kind, _, ok, cut := enumerateCutInto(obs, e.e, pd, in, e.cfg.kinds, e.cfg.oppEnumLimit(), autoPay, e.cfg.enumBoard)
+	autoPay, topK, kinds := e.cfg.oppAutoPay, e.cfg.oppTopK, e.cfg.kinds
+	if !e.cfg.oppHold {
+		kinds.hold = nil
+	}
+	cands, kind, _, ok, cut := enumerateCutInto(obs, e.e, pd, in, kinds, e.cfg.oppEnumLimit(), autoPay, e.cfg.enumBoard)
 	if !ok {
 		return nil
 	}

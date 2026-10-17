@@ -132,3 +132,51 @@ func TestParseManualTaps(t *testing.T) {
 		}
 	}
 }
+
+// :holdupkeep[=NAMES] sets azmcts Options.HoldUpkeep (and HoldUpkeepExempt, as written) on az and prior seats;
+// it is refused on the bots, and an empty exempt name is an error.
+func TestParseHoldUpkeep(t *testing.T) {
+	m := policynet.NewModel(policynet.TableRows, 4, 3, rand.New(rand.NewPCG(1, 2)))
+	m.InitValue(2, rand.New(rand.NewPCG(3, 4)))
+	net := filepath.Join(t.TempDir(), "prior.gpol")
+	if err := m.SaveCheckpoint(net); err != nil {
+		t.Fatal(err)
+	}
+	prior := "prior:net=" + net
+	for _, tc := range []struct {
+		spec   string
+		hold   bool
+		exempt string
+	}{
+		{"az:sims=8", false, ""},
+		{"az:sims=8:autopay", false, ""},
+		{"az:sims=8:autopay:holdupkeep", true, ""},
+		{"az:sims=200:holdupkeep:autopay:oppnodes:oppfull:topk=4:cpuct=0.25", true, ""},
+		{"az:sims=8:holdupkeep=Opt", true, "Opt"},
+		{"az:sims=8:autopay:holdupkeep=Opt|Consider|Jace's Erasure:mull", true, "Opt|Consider|Jace's Erasure"},
+		{prior + ":autopay:holdupkeep", true, ""},
+		{prior, false, ""},
+	} {
+		p, err := parsePolicy(tc.spec)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.spec, err)
+		}
+		cfg := p.azConfig()
+		if p.HoldUpkeep != tc.hold || cfg.Search.HoldUpkeep != tc.hold || p.HoldExempt != tc.exempt || cfg.Search.HoldUpkeepExempt != tc.exempt {
+			t.Fatalf("%s: holdupkeep %v %q (config %v %q), want %v %q", tc.spec, p.HoldUpkeep, p.HoldExempt,
+				cfg.Search.HoldUpkeep, cfg.Search.HoldUpkeepExempt, tc.hold, tc.exempt)
+		}
+		if cfg.ManualTaps || !cfg.Search.Kinds.Priority {
+			t.Fatalf("%s: holdupkeep changed another setting: %+v", tc.spec, cfg)
+		}
+		if _, err := p.seat(7); err != nil {
+			t.Fatalf("%s: %v", tc.spec, err)
+		}
+	}
+	for _, bad := range []string{"bot:holdupkeep", "bot:autopay:holdupkeep", "random:holdupkeep", "sbtactical:holdupkeep",
+		"az:holdupkeep=Opt|", "az:holdupkeep=|Opt", "az:holdupkeep=Opt||Consider", "az:holdupkeep= "} {
+		if _, err := parsePolicy(bad); err == nil {
+			t.Fatalf("%s parsed", bad)
+		}
+	}
+}

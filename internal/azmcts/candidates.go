@@ -214,7 +214,7 @@ func enumerateLimit(obs *searchprobe.Collector, e *rules.Engine, d *decision.Dec
 	// abilities, but they are nevertheless legal priority actions and must be
 	// searchable when an embedding exposes auto-pay (paymentPriorityCands).
 	if autoPayment && kind == "priority" && e != nil {
-		cands, why, ok := paymentPriorityCands(obs, e, d, bot, limit, scratch)
+		cands, why, ok := paymentPriorityCands(obs, e, d, bot, limit, kinds.hold, scratch)
 		return cands, kind, why, ok
 	}
 	if bot.Payment != nil {
@@ -242,7 +242,10 @@ func enumerateLimit(obs *searchprobe.Collector, e *rules.Engine, d *decision.Dec
 		if err != nil || len(base) != 1 {
 			return nil, kind, SkipTranslate, false
 		}
-		for _, a := range obs.Candidates(worthOptionsInto(od, e, d, scratch), base[0], limit) {
+		// Under Options.HoldUpkeep the held casts go too, before the cap; a
+		// bot answer among them is then outside the candidates (not
+		// searched, the ordinary rule).
+		for _, a := range obs.Candidates(keptOptions(od, e, d, scratch, kinds.hold), base[0], limit) {
 			in, err := obs.Match(d, []searchprobe.Action{a})
 			if err != nil {
 				return nil, kind, SkipTranslate, false
@@ -528,9 +531,10 @@ func nameKeys(obs *searchprobe.Collector, e *rules.Engine, d *decision.Decision,
 // mana only for a cast its plans cannot make) -- is not searched: the bot's
 // answer is played (SkipFewCandidates, the ordinary path's rule). Then
 // Pass, the payment casts in engine order, and the rest by key; capped at
-// limit.
-func paymentPriorityCands(obs *searchprobe.Collector, e *rules.Engine, d *decision.Decision, bot decision.Intent, limit int, scratch *boardScratch) ([]cand, SkipReason, bool) {
-	v, why, ok := paymentVocabulary(obs, e, d, scratch)
+// limit. hold (Options.HoldUpkeep, nil off) drops its held casts from the
+// vocabulary first (paymentVocabulary).
+func paymentPriorityCands(obs *searchprobe.Collector, e *rules.Engine, d *decision.Decision, bot decision.Intent, limit int, hold *holdUpkeep, scratch *boardScratch) ([]cand, SkipReason, bool) {
+	v, why, ok := paymentVocabulary(obs, e, d, hold, scratch)
 	if !ok {
 		return nil, why, false
 	}
@@ -554,11 +558,15 @@ type paymentVocab struct {
 	hasPass bool
 }
 
-func paymentVocabulary(obs *searchprobe.Collector, e *rules.Engine, d *decision.Decision, scratch *boardScratch) (paymentVocab, SkipReason, bool) {
+// paymentVocabulary is d's vocabulary. Where hold is on (Options.HoldUpkeep:
+// the active player's empty-stack upkeep or draw) it leaves out every held
+// cast, the payment actions and the legacy "cast" options alike.
+func paymentVocabulary(obs *searchprobe.Collector, e *rules.Engine, d *decision.Decision, hold *holdUpkeep, scratch *boardScratch) (paymentVocab, SkipReason, bool) {
 	if _, err := obs.ObserveDecision(e, d); err != nil {
 		return paymentVocab{}, SkipTranslate, false
 	}
 	payments := e.EnsurePaymentActions()
+	holding, held := hold.on(e, d), false
 	var pays, rest []cand
 	var pass cand
 	havePass := false
@@ -566,6 +574,10 @@ func paymentVocabulary(obs *searchprobe.Collector, e *rules.Engine, d *decision.
 	payAt := make(map[state.ObjID]int, len(payments))    // lookup only -- never ranged.
 	for _, a := range payments {
 		if len(a.Plans) == 0 || covered[a.Cast.Object] {
+			continue
+		}
+		if holding && hold.holds(e, a.Cast.Object) {
+			held = true
 			continue
 		}
 		acts, err := paymentActs(obs, e, d, a)
@@ -601,6 +613,10 @@ func paymentVocabulary(obs *searchprobe.Collector, e *rules.Engine, d *decision.
 		if o.Kind == "cast" && o.Mode == "" && o.AltCostIndex == 0 && covered[o.Obj] {
 			continue
 		}
+		if holding && hold.holdsOption(e, o) {
+			held = true
+			continue
+		}
 		in := decision.Intent{Seq: d.Seq, Player: d.Player, Choices: []int{i}}
 		acts, err := obs.Actions(d, in)
 		if err != nil {
@@ -616,6 +632,9 @@ func paymentVocabulary(obs *searchprobe.Collector, e *rules.Engine, d *decision.
 		rest = append(rest, c)
 	}
 	sortByJSON(rest)
+	if held {
+		hold.count()
+	}
 	v := paymentVocab{payAt: payAt, hasPass: havePass}
 	n := len(pays) + len(rest)
 	if havePass {
@@ -809,30 +828,46 @@ func worthOptions(od *searchprobe.ObservedDecision, e *rules.Engine, d *decision
 // worthOptionsInto is worthOptions building its board into scratch (nil
 // allocates).
 func worthOptionsInto(od *searchprobe.ObservedDecision, e *rules.Engine, d *decision.Decision, scratch *boardScratch) *searchprobe.ObservedDecision {
+	return keptOptions(od, e, d, scratch, nil)
+}
+
+// keptOptions is worthOptionsInto that also drops, where hold is on
+// (Options.HoldUpkeep: the active player's empty-stack upkeep or draw), every
+// held "cast" option. hold nil is worthOptionsInto exactly.
+func keptOptions(od *searchprobe.ObservedDecision, e *rules.Engine, d *decision.Decision, scratch *boardScratch, hold *holdUpkeep) *searchprobe.ObservedDecision {
 	if od == nil || len(od.Options) != len(d.Options) {
 		return od
 	}
+	holding, held := hold.on(e, d), false
 	var b botpolicy.Board
 	built := false
 	var keep []searchprobe.ObservedOption
 	for i, o := range d.Options {
-		if o.Kind == "ability" {
+		drop := false
+		switch {
+		case o.Kind == "ability":
 			if !built {
 				if e != nil {
 					b = boardInto(e, d.Player, scratch)
 				}
 				built = true
 			}
-			if !b.AbilityWorthTaking(o, d.Player) {
-				if keep == nil {
-					keep = append(make([]searchprobe.ObservedOption, 0, len(od.Options)), od.Options[:i]...)
-				}
-				continue
+			drop = !b.AbilityWorthTaking(o, d.Player)
+		case holding && hold.holdsOption(e, o):
+			drop, held = true, true
+		}
+		if drop {
+			if keep == nil {
+				keep = append(make([]searchprobe.ObservedOption, 0, len(od.Options)), od.Options[:i]...)
 			}
+			continue
 		}
 		if keep != nil {
 			keep = append(keep, od.Options[i])
 		}
+	}
+	if held {
+		hold.count()
 	}
 	if keep == nil {
 		return od
