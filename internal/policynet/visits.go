@@ -88,6 +88,13 @@ type VisitRecord struct {
 	// for weight 1, so a corpus without weighted records is unchanged byte
 	// for byte). LoadVisits does not apply it; dzgorge pack carries it.
 	Weight float64 `json:"weight,omitempty"`
+	// NoBot (DraftZero) marks a search with no bot candidate (azmcts
+	// Result.NoBot: the auto-payment seat's reroute of a bot's manual mana
+	// tap): candidate 0 is Pass, not the bot's answer, and no option is
+	// BotPick. A reader that takes candidate 0 for the bot's answer
+	// (VisitLabelBot, a top-1-against-the-bot readout) should skip it.
+	// Omitted when false, so a corpus without one is unchanged byte for byte.
+	NoBot bool `json:"no_bot,omitempty"`
 }
 
 // VisitTarget is a visit-corpus example's policy target: a distribution Pi

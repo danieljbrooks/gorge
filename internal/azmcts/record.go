@@ -88,11 +88,19 @@ func visitRecord(e *rules.Engine, d *decision.Decision, res Result, fs policynet
 			used[payChoice[c]] = true
 		}
 	}
-	bot := res.Candidates[0]
 	enc := policynet.EncodeOptionsWith(fs, &v, d.Player, d.Kind, opts, nil)
-	seat.MarkBotPicks(d, enc[:len(d.Options)], bot)
-	if payChoice[0] >= 0 {
-		enc[payChoice[0]].BotPick = true
+	// Candidate 0's options are the bot's (BotPick) -- unless the root had no
+	// bot candidate (Result.NoBot: the seat's bot-tap reroute), where
+	// candidate 0 is Pass and the bot's answer, a manual mana tap, is no
+	// candidate's: no stored option is the bot's, as the search's prior
+	// (priors, marking Root.Bot) saw it, and the record says so.
+	if res.NoBot {
+		rec.NoBot = true
+	} else {
+		seat.MarkBotPicks(d, enc[:len(d.Options)], res.Candidates[0])
+		if payChoice[0] >= 0 {
+			enc[payChoice[0]].BotPick = true
+		}
 	}
 	stored := make([]int, len(opts))
 	for i := range opts {

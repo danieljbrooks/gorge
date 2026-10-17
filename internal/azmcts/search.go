@@ -45,7 +45,7 @@ type Root struct {
 }
 
 // Result is one Search. Candidates, Keys, Labels, Visits, Avail, Prior and
-// Q are parallel; index 0 is the bot's answer.
+// Q are parallel; index 0 is the bot's answer, except under NoBot.
 type Result struct {
 	Kind       string // "", or the searched kind
 	Candidates []decision.Intent
@@ -64,6 +64,14 @@ type Result struct {
 	// under Sample, draws the move from. nil with ForcedK 0, or when no
 	// simulation completed.
 	Target []int
+	// NoBot (DraftZero) reports a full root with no bot candidate (Root.NoBot,
+	// or BotKey unmatched, with Bot outside the vocabulary; rootCands):
+	// candidate 0 is then the vocabulary's first (Pass), not the bot's
+	// answer, and Intent is the chosen candidate even at Choice 0. Its visit
+	// record (VisitRecord.NoBot) marks no option the bot's (Option.BotPick):
+	// the bot's answer -- under Seat.DecideSearch's bot-tap reroute, a
+	// manual mana tap -- is no candidate's, as the search's prior saw it.
+	NoBot bool
 }
 
 // RootRow is one root child of a Search: its semantic key, a
@@ -232,6 +240,7 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 		}
 		return res, nil
 	}
+	res.NoBot = !botFound
 	priorNet := net
 	if opts.UniformPrior {
 		priorNet = nil

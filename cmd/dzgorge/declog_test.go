@@ -46,7 +46,12 @@ func TestDeclogReadsOnly(t *testing.T) {
 		k, _ := line["t"].(string)
 		kinds[k]++
 		switch k {
-		case "prio", "target", "stack", "card":
+		case "prio":
+			// rerooted is written only when true, and only beside the search record it reads (no_bot).
+			if r, ok := line["rerooted"]; ok && (r != true || line["search"] == nil) {
+				t.Fatalf("prio line with rerooted %v and search %v: %q", r, line["search"], sc.Text())
+			}
+		case "target", "stack", "card":
 		case "game":
 			counts, _ := line["counts"].([]any)
 			if len(counts) != 2 {

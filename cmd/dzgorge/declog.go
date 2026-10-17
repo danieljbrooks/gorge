@@ -5,7 +5,8 @@ package main
 //
 //   - "prio": a priority decision of either seat whose options include casting an instant-speed spell (an instant,
 //     or a card with flash) from its hand, or whose answer casts one. With the active player, step, stack, the
-//     seat's and its opponent's untapped lands, what it could cast at instant speed and what it chose.
+//     seat's and its opponent's untapped lands, what it could cast at instant speed and what it chose; a searched
+//     decision carries its search record, and "rerooted" when that search was the bot-tap reroute.
 //   - "target": a target decision of either seat: the stack object it targets for (the top of the stack, or the
 //     spell being cast) and the chosen targets, each an object (name, controller, zone) or a player.
 //   - "stack": each spell and ability on the stack, once, with its targets as first chosen, written when the game
@@ -74,6 +75,10 @@ type dlPrio struct {
 	// Search is the seat's search record for this decision, when it searched (cands index its priority vocabulary:
 	// [0] is pass, then the payment casts in engine order).
 	Search *auditSide `json:"search,omitempty"`
+	// Rerooted is true when that search was the az seat's bot-tap reroute (gorge 9afeacb2e): the seat's auto-pay
+	// bot answered a manual mana tap, so the payment vocabulary was searched with no bot candidate (the record's
+	// no_bot; candidate 0 is pass, not the bot's answer). Absent otherwise, and always under :manualtaps.
+	Rerooted bool `json:"rerooted,omitempty"`
 }
 
 type dlTargetLine struct {
@@ -479,7 +484,7 @@ func (l *decLog) priority(e *rules.Engine, seat int, d *decision.Decision, in de
 	}
 	if sr := l.last[seat]; sr != nil && sr.Sequence == d.Seq {
 		t := trimRecord(sr)
-		r.Search = &t
+		r.Search, r.Rerooted = &t, sr.NoBot
 	}
 	declogW.write(r)
 }

@@ -47,7 +47,7 @@ import (
 //	                             tapping lands by hand. On an az seat only, a decision whose bot answer
 //	                             still taps by hand is rerouted: searched over the payment vocabulary
 //	                             with no bot candidate (azmcts Root.NoBot; play's summary counts them as
-//	                             az_bot_tap_rerooted). A prior
+//	                             az_bot_tap_rerooted, -declog marks their prio lines rerooted). A prior
 //	                             seat has no such reroute: it gains the payment plans but still plays
 //	                             such a bot tap unsearched
 //	   :manualtaps               with :autopay: the seat as before gorge 9afeacb2e, to replay older games
