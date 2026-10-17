@@ -94,6 +94,9 @@ type azAgg struct {
 	// :forced=: searches with forced playouts, their completed simulations, the root selections the
 	// forced rule changed, and the visits and children policy target pruning took out.
 	forcedSearched, forcedSims, forcedPlayouts, prunedVisits, prunedChildren atomic.Int64
+	// :autopay without :manualtaps: searched decisions whose bot answer was a manual mana tap, rerouted into a
+	// search with no bot candidate (azmcts Stats.BotTapRerooted, gorge 9afeacb2e).
+	botTapRerooted atomic.Int64
 }
 
 var azStats azAgg
@@ -389,6 +392,7 @@ func runPlay(args []string) int {
 		azStats.noWorld.Add(int64(d.Stats.NoWorld))
 		azStats.allFailed.Add(int64(d.Stats.AllFailed))
 		azStats.priorFallbacks.Add(int64(d.Stats.PriorFallbacks))
+		azStats.botTapRerooted.Add(int64(d.Stats.BotTapRerooted))
 		azStats.topKPoints.Add(int64(d.Stats.PriorTopKPoints))
 		azStats.topKCuts.Add(int64(d.Stats.PriorTopKCuts))
 		azStats.topKBefore.Add(int64(d.Stats.PriorTopKBefore))
@@ -632,6 +636,9 @@ func runPlay(args []string) int {
 		sum["az_no_world_sims"] = azStats.noWorld.Load()
 		sum["az_all_failed"] = azStats.allFailed.Load()
 		sum["az_prior_fallbacks"] = azStats.priorFallbacks.Load()
+		// Searched decisions whose auto-pay bot answered a manual mana tap, searched with no bot candidate
+		// instead of played unsearched (azmcts Stats.BotTapRerooted; 0 under :manualtaps, near 0 is healthy).
+		sum["az_bot_tap_rerooted"] = azStats.botTapRerooted.Load()
 		if r := refusalReasons(); len(r) > 0 {
 			// Why redeals refused or deals failed, by reason (numbers and names stripped).
 			sum["az_refusal_reasons"] = r

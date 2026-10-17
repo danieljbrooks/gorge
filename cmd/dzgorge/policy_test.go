@@ -1,10 +1,13 @@
 package main
 
 import (
+	"math/rand/v2"
+	"path/filepath"
 	"testing"
 
 	"github.com/adams-shaun/gorge/botpolicy"
 	"github.com/adams-shaun/gorge/cards"
+	"github.com/adams-shaun/gorge/internal/policynet"
 	"github.com/adams-shaun/gorge/internal/spellbench/builtins"
 	"github.com/adams-shaun/gorge/internal/testutil"
 )
@@ -76,5 +79,56 @@ func TestSBTacticalPlaysAGame(t *testing.T) {
 			t.Fatalf("leg %d: keep7 sbtactical took %d mulligans", leg, m)
 		}
 		t.Logf("leg %d: %s after %d turns, %d intents, mulligans %v, %.0f ms", leg, rec.Result, rec.Turns, rec.Intents, rec.Mull, rec.MS)
+	}
+}
+
+// :manualtaps parses into the az or prior seat's SeatConfig.ManualTaps (an az and prior key): such a seat is no
+// payment-plan consumer (the seat before gorge 9afeacb2e), while the same seat without the key consumes the
+// engine's plans under :autopay.
+func TestParseManualTaps(t *testing.T) {
+	type planConsumer interface{ WantsPaymentActions() bool }
+	// A prior seat needs a network (with a value head, as every search seat's does): a small untrained one,
+	// written to a temp file through the real writer (the path holds no colon, which would end net='s value).
+	m := policynet.NewModel(policynet.TableRows, 4, 3, rand.New(rand.NewPCG(1, 2)))
+	m.InitValue(2, rand.New(rand.NewPCG(3, 4)))
+	net := filepath.Join(t.TempDir(), "prior.gpol")
+	if err := m.SaveCheckpoint(net); err != nil {
+		t.Fatal(err)
+	}
+	prior := "prior:net=" + net
+	for _, tc := range []struct {
+		spec          string
+		manual, plans bool
+	}{
+		{"az:sims=8", false, false},
+		{"az:sims=8:autopay", false, true},
+		{"az:sims=8:autopay:manualtaps", true, false},
+		{"az:sims=200:manualtaps:autopay:oppnodes:oppfull:morekinds:cpuct=0.25", true, false},
+		{"az:sims=8:manualtaps", true, false},
+		{prior, false, false},
+		{prior + ":autopay", false, true},
+		{prior + ":autopay:manualtaps", true, false},
+		{prior + ":manualtaps", true, false},
+	} {
+		p, err := parsePolicy(tc.spec)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.spec, err)
+		}
+		if p.ManualTaps != tc.manual || p.azConfig().ManualTaps != tc.manual {
+			t.Fatalf("%s: manualtaps %v (config %v), want %v", tc.spec, p.ManualTaps, p.azConfig().ManualTaps, tc.manual)
+		}
+		st, err := p.seat(7)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pc, ok := st.(planConsumer)
+		if !ok || pc.WantsPaymentActions() != tc.plans {
+			t.Fatalf("%s: %T wants payment plans %v, want %v", tc.spec, st, ok && pc.WantsPaymentActions(), tc.plans)
+		}
+	}
+	for _, bad := range []string{"bot:manualtaps", "bot:autopay:manualtaps", "random:manualtaps", "sbtactical:manualtaps"} {
+		if _, err := parsePolicy(bad); err == nil {
+			t.Fatalf("%s parsed: manualtaps is an az and prior key", bad)
+		}
 	}
 }

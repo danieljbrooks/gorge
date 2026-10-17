@@ -42,7 +42,23 @@ import (
 //	   :autopay                  mana paid automatically: every cast (and pass) at a priority stop is a
 //	                             candidate, so the search decides what to cast and when (the seat's own
 //	                             bot is gorge's auto-pay bot; azmcts Options.AutoPayment). bot:autopay is
-//	                             that bot alone
+//	                             that bot alone. The az and prior seats consume the engine's payment
+//	                             plans (gorge 9afeacb2e): their bot casts through a plan instead of
+//	                             tapping lands by hand. On an az seat only, a decision whose bot answer
+//	                             still taps by hand is rerouted: searched over the payment vocabulary
+//	                             with no bot candidate (azmcts Root.NoBot; play's summary counts them as
+//	                             az_bot_tap_rerooted). A prior
+//	                             seat has no such reroute: it gains the payment plans but still plays
+//	                             such a bot tap unsearched
+//	   :manualtaps               with :autopay: the seat as before gorge 9afeacb2e, to replay older games
+//	                             -- no payment plans are built for it, so its auto-pay bot taps lands by
+//	                             hand, and a decision whose bot answer is such a tap is skipped (the tap
+//	                             played unsearched) rather than searched; the search then decides with
+//	                             mana floating (azmcts SeatConfig.ManualTaps). An az and prior key;
+//	                             without :autopay it changes nothing. An exact replay of an old game
+//	                             needs play -workers 1: with more workers the search's floats and walk
+//	                             counters differ from run to run (gonet's caches are shared across the
+//	                             workers' games), as the old binary's own multi-worker runs do
 //	   :topk=K                   the network chooses the candidates: every searched decision (the root
 //	                             and every one inside a simulation) is enumerated in full and the bot's
 //	                             answer is kept with the K-1 others the network's prior ranks highest,
@@ -164,6 +180,9 @@ type policySpec struct {
 	lookup builtins.CardLookup
 	// belief is :closedlist's opponent-list belief (setBelief).
 	belief *searchprobe.Belief
+
+	// ManualTaps is :manualtaps: no payment plans, no bot-tap reroute (azmcts SeatConfig.ManualTaps).
+	ManualTaps bool
 }
 
 // setBelief gives a :closedlist seat its belief (loaded after the specs are parsed).
@@ -230,6 +249,8 @@ func parsePolicy(s string) (*policySpec, error) {
 			p.Cands, err = strconv.Atoi(v)
 		case "autopay":
 			p.AutoPay = true
+		case "manualtaps":
+			p.ManualTaps = true
 		case "mull":
 			p.Mull = botpolicy.MulliganLands
 		case "keep7":
@@ -321,6 +342,9 @@ func parsePolicy(s string) (*policySpec, error) {
 	}
 	if p.Closed && p.Kind != "az" {
 		return nil, fmt.Errorf("policy %q: closedlist is an az key", s)
+	}
+	if p.ManualTaps && !p.searches() {
+		return nil, fmt.Errorf("policy %q: manualtaps is an az and prior key", s)
 	}
 	if err := p.checkPCR(cheapSet); err != nil {
 		return nil, fmt.Errorf("policy %q: %w", s, err)
@@ -486,6 +510,7 @@ func (p *policySpec) azConfig() azmcts.SeatConfig {
 		cfg.Search.Limit = p.Cands
 	}
 	cfg.Search.AutoPayment = p.AutoPay
+	cfg.ManualTaps = p.ManualTaps
 	cfg.Mulligan = p.Mull
 	cfg.Search.PriorTopK = p.TopK
 	cfg.SimsByKind = p.KSims

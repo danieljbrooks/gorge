@@ -105,6 +105,14 @@ type SeatConfig struct {
 	DecidedN      int
 	DecidedSims   int
 	DecidedWeight float64
+	// ManualTaps (DraftZero) restores the seat as it was before upstream
+	// 9afeacb2e: it is no payment-plan consumer (WantsPaymentActions false,
+	// so a driver builds no plans for it and its auto-pay bot taps mana by
+	// hand) and DecideSearch never reroutes a bot tap into the search (the
+	// decision is skipped and the tap played, as before). Only meaningful
+	// with Search.AutoPayment; a reproduction control for games played
+	// before the fix, never a configuration to train with.
+	ManualTaps bool
 }
 
 // DefaultSeatConfig is the eval seat with the spec's knobs.
@@ -318,7 +326,8 @@ func (s *Seat) DecideSearch(ctx context.Context, env searchseat.Env, d decision.
 	// counterspell windows az never learned. Search the full vocabulary with
 	// no bot candidate instead (Root.NoBot); every failure path still plays
 	// the bot's tap. Stats.BotTapRerooted counts it.
-	tapReroot := opts.AutoPayment && d.Kind == decision.KPriority && priorityBase(&d, botIn) == BaseActivate
+	// SeatConfig.ManualTaps (DraftZero) turns the backstop off: the seat as before 9afeacb2e.
+	tapReroot := !s.cfg.ManualTaps && opts.AutoPayment && d.Kind == decision.KPriority && priorityBase(&d, botIn) == BaseActivate
 	if tapReroot {
 		root.NoBot = true
 	}
@@ -385,8 +394,9 @@ func (s *Seat) DecideSearch(ctx context.Context, env searchseat.Env, d decision.
 // search runs over the auto-payment vocabulary (SeatConfig.Search.AutoPayment).
 // Without plans the wrapped auto-pay bot answers with a manual mana tap, which
 // is outside that vocabulary, so the decision would go unsearched. A seat
-// without AutoPayment searches the manual options and opts out.
-func (s *Seat) WantsPaymentActions() bool { return s.cfg.Search.AutoPayment }
+// without AutoPayment searches the manual options and opts out, and so does
+// a SeatConfig.ManualTaps seat (DraftZero: the seat as before 9afeacb2e).
+func (s *Seat) WantsPaymentActions() bool { return s.cfg.Search.AutoPayment && !s.cfg.ManualTaps }
 
 // DigestFree reports that the seat never samples from its feed's history
 // (searchseat.DigestFree): both world sources -- the injected clairvoyant
