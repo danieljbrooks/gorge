@@ -155,7 +155,7 @@ func trickDriver(e *rules.Engine, d *decision.Decision, rngs []*rand.Rand, cast 
 // twOppBotCast, each with an empty stack but the three spell windows.
 const (
 	twMain       = iota // seat 0's own first main phase, both seats controlling a creature: closed
-	twUpkeep            // seat 0's own upkeep, both controlling a creature: closed (and :holdupkeep's window)
+	twUpkeep            // seat 0's own upkeep, both controlling a creature, Goblin Surprise castable: closed (and :holdupkeep's window)
 	twBegin             // seat 0's own beginning of combat: closed, but for Fleeting Flight (its controller's own)
 	twOppBegin          // seat 1's beginning of combat: closed, Fleeting Flight's too (not its controller's own)
 	twNoAttack          // seat 0's own declare-attackers step with no creature attacking: closed
@@ -164,7 +164,7 @@ const (
 	twBlock             // seat 1's declare-blockers step, seat 1 attacking: open
 	twDamage            // a combat-damage step between its two damage passes (a first striker in combat): open
 	twOppSpell          // seat 1's creature spell on the stack, seat 0 controlling a creature: open, Refute castable
-	twOwnSpell          // seat 0's own creature spell on the stack: open, Refute castable on its own spell only
+	twOwnSpell          // seat 0's own creature spell on the stack: closed (its own object opens none), Refute castable on its own spell only
 	twNoOwn             // seat 1's creature spell on the stack, seat 0 controlling no creature: open, no own target
 	twBotCast           // a closed window where seat 0's auto-pay bot casts a gated trick
 	twOppBotCast        // a closed window where seat 1's auto-pay bot casts a gated trick (seat 1 to act)
@@ -263,7 +263,7 @@ func trickWindowOf(t *testing.T, e *rules.Engine, d *decision.Decision, want fun
 	switch {
 	case g.Active == 0 && g.Step == state.StepMain1 && c[nFlight] && c[nGoblinSurp] && c[nFakeDeath]:
 		return twMain
-	case g.Active == 0 && g.Step == state.StepUpkeep:
+	case g.Active == 0 && g.Step == state.StepUpkeep && c[nGoblinSurp]:
 		return twUpkeep
 	case g.Active == 0 && g.Step == state.StepBeginCombat && c[nFlight]:
 		return twBegin
@@ -438,7 +438,7 @@ var trickExpects = [numTrickWindows]trickExpect{
 	twBlock:      {offered: []string{nGiantGrowth}},
 	twDamage:     {offered: []string{nGiantGrowth}},
 	twOppSpell:   {offered: []string{nGiantGrowth, nRefute}},
-	twOwnSpell:   {side: nameSet(nRefute), offered: []string{nGiantGrowth, nRefute}},
+	twOwnSpell:   {gated: nameSet(nGiantGrowth, nFlight, nFakeDeath, nSnakeskin), side: nameSet(nRefute), offered: []string{nGiantGrowth, nRefute}},
 	twNoOwn:      {side: nameSet(nGiantGrowth, nFlight, nFakeDeath), offered: []string{nGiantGrowth, nRefute}},
 	twBotCast:    {gated: nameSet(nGiantGrowth, nFlight, nFakeDeath, nSnakeskin)},
 	twOppBotCast: {gated: nameSet(nGiantGrowth, nFlight, nFakeDeath, nSnakeskin)},
@@ -495,8 +495,9 @@ func checkTrickEnum(t *testing.T, name string, e *rules.Engine, d *decision.Deci
 // outside the trick windows (Fleeting Flight kept at its controller's own
 // beginning of combat), kept inside them; Goblin Surprise's cast is always
 // kept; a gated card with no target on its caster's side is dropped inside
-// a window too; Refute is dropped with only its caster's own spell on the
-// stack and kept over an opponent's. With mana floating, the manual
+// a window too; the caster's own spell on the stack opens no window, and
+// Refute is dropped with only that spell to counter and kept over an
+// opponent's. With mana floating, the manual
 // vocabulary's legacy casts are dropped the same way.
 func TestTricksGatesCastsOutsideTheWindows(t *testing.T) {
 	ws := trickWindows(t)
@@ -592,10 +593,13 @@ func trickSearch(t *testing.T, e *rules.Engine, bot decision.Intent, tricks bool
 // Search with Options.Tricks: at a closed window the root is the unruled
 // vocabulary minus the gated casts (capped: a dropped cast frees its slot),
 // Stats.TricksGated 1; a side-check root counts TricksSide; an open window
-// searches exactly as without the rule. A bot answer the rule drops is
-// played as pass, unsearched (TricksBot), and a full root's macro casting a
-// gated card is left out. It composes with HoldUpkeep: in the own upkeep
-// HoldUpkeep holds every cast first, elsewhere Tricks gates alone.
+// searches exactly as without the rule. A bot cast the rule drops is never
+// searched (TricksBot): the root is rerooted over what is left with no bot
+// candidate, or the one candidate left is played; without AutoPayment, and
+// inside HoldUpkeep's window, pass is played. A full root's macro casting a
+// gated card is left out, and counted. It composes with HoldUpkeep: in the
+// own upkeep HoldUpkeep holds every cast first, elsewhere Tricks gates
+// alone.
 func TestTricksAtTheSearchRoot(t *testing.T) {
 	ws := trickWindows(t)
 	limit := DefaultOptions().Limit
@@ -637,22 +641,59 @@ func TestTricksAtTheSearchRoot(t *testing.T) {
 			t.Fatalf("%s: the rule changed an open window's search: visits %v, want %v", name, on.Visits, off.Visits)
 		}
 	}
-	// The bot casts a gated trick outside the windows: pass, unsearched.
-	for _, w := range []int{twMain, twBotCast} {
+	// The bot casts a gated trick outside the windows: never searched. In
+	// the own main phase and upkeep (no HoldUpkeep) the root is rerooted:
+	// the unruled vocabulary minus the gated casts, with no bot candidate
+	// (Pass first), so Goblin Surprise, cast freely, is searched too. In
+	// the opponent's upkeep pass alone is left, and it is played.
+	for _, w := range []int{twMain, twUpkeep, twBotCast} {
 		e := ws[w]
 		d := e.Pending()
+		name := trickWindowNames[w] + ", a bot cast"
 		bot := payCastOf(t, e, d, nGiantGrowth)
 		off := trickSearch(t, e, bot, false, "", nil)
 		on := trickSearch(t, e, bot, true, "", nil)
 		if off.Stats.Searched != 1 || castName(e, d, off.Candidates[0]) != nGiantGrowth {
-			t.Fatalf("%s, a bot cast, off: searched %d, candidates %v", trickWindowNames[w], off.Stats.Searched, off.Labels)
+			t.Fatalf("%s, off: searched %d, candidates %v", name, off.Stats.Searched, off.Labels)
 		}
-		if on.Stats.TricksBot != 1 || on.Stats.TricksGated != 1 || on.Stats.Skipped != 1 || !reflect.DeepEqual(on.Intent, passOf(t, d)) {
-			t.Fatalf("%s, a bot cast, on: bot %d gated %d skipped %d, played %+v", trickWindowNames[w], on.Stats.TricksBot, on.Stats.TricksGated, on.Stats.Skipped, on.Intent)
+		all, _, _, _, _ := enumerateCut(searchprobe.NewCollector(d.Player), e.Clone(), d, passOf(t, d), AllKinds(), BenchCandidateLimit, true)
+		var rest []cand
+		for _, c := range all {
+			if !trickExpects[w].gated[castName(e, d, c.in)] {
+				rest = append(rest, c)
+			}
+		}
+		if on.Stats.TricksBot != 1 || on.Stats.TricksGated != 1 || len(rest) == 0 {
+			t.Fatalf("%s, on: bot %d gated %d, %d candidates left", name, on.Stats.TricksBot, on.Stats.TricksGated, len(rest))
+		}
+		if (len(rest) >= 2) != (w != twBotCast) {
+			t.Fatalf("%s: %d candidates left by the rule %v", name, len(rest), keysOf(rest))
+		}
+		if len(rest) < 2 {
+			if on.Stats.Searched != 0 || on.Stats.Skipped != 1 || on.NoBot || !reflect.DeepEqual(on.Intent, rest[0].in) || !reflect.DeepEqual(on.Intent, passOf(t, d)) {
+				t.Fatalf("%s, on: searched %d skipped %d no bot %v, played %+v, want the one left %+v", name, on.Stats.Searched, on.Stats.Skipped, on.NoBot, on.Intent, rest[0].in)
+			}
+			continue
+		}
+		want := keysOf(rest)
+		if len(want) > limit {
+			want = want[:limit]
+		}
+		if on.Stats.Searched != 1 || !on.NoBot || !reflect.DeepEqual(on.Keys, want) || !reflect.DeepEqual(on.Intent, on.Candidates[on.Choice]) {
+			t.Fatalf("%s, on: searched %d no bot %v, keys %v, want %v; played %+v (choice %d)", name, on.Stats.Searched, on.NoBot, on.Keys, want, on.Intent, on.Choice)
+		}
+		weighed := false
+		for i, in := range on.Candidates {
+			if n := castName(e, d, in); n != "" && !gatedTricks[n] && on.Visits[i] > 0 {
+				weighed = true
+			}
+		}
+		if !weighed {
+			t.Fatalf("%s, on: no ungated cast searched: %v, visits %v", name, on.Labels, on.Visits)
 		}
 	}
-	// The manual vocabulary with mana floating: the bot's legacy cast is
-	// played as pass too.
+	// The manual vocabulary with mana floating: no full root to reroot to,
+	// so the bot's legacy cast is played as pass, unsearched.
 	{
 		e := ws[twMain].Clone()
 		floatMana(t, e, "G")
@@ -717,6 +758,38 @@ func TestTricksAtTheSearchRoot(t *testing.T) {
 			t.Fatalf("%s, full root: keys %v -> %v, gated %d", trickWindowNames[w], off.Keys, on.Keys, on.Stats.TricksGated)
 		}
 	}
+	// A full root that loses only a macro: Snakeskin Veil listed alone, not
+	// castable in the own main phase (so the vocabulary loses nothing), cast
+	// by a macro's second step. TricksGated counts it.
+	{
+		e := ws[twMain]
+		d := e.Pending()
+		var veil state.ObjID
+		for i := range e.G.Objs {
+			if o := &e.G.Objs[i]; o.Owner == 0 && cardName(e, o.ID) == nSnakeskin {
+				veil = o.ID
+			}
+		}
+		var gs state.ObjID
+		for _, a := range e.EnsurePaymentActions() {
+			if len(a.Plans) > 0 && cardName(e, a.Cast.Object) == nGoblinSurp {
+				gs = a.Cast.Object
+			}
+		}
+		if veil == 0 || gs == 0 || castableNames(e, d)[nSnakeskin] || castableNames(e, d)[nRefute] {
+			t.Fatalf("own main: Snakeskin Veil %d (castable %v), Goblin Surprise %d", veil, castableNames(e, d), gs)
+		}
+		macro := func(r *Root) {
+			r.NoBot = true
+			r.Macros = []Macro{{Key: MacroKeyPrefix + "veil", Label: "macro veil", Steps: []MacroStep{
+				{Player: 0, Kind: decision.KPriority, PayCast: gs}, {Player: 0, Kind: decision.KPriority, PayCast: veil}}}}
+		}
+		plain := trickSearch(t, e, decision.Intent{}, true, nSnakeskin, func(r *Root) { r.NoBot = true })
+		lost := trickSearch(t, e, decision.Intent{}, true, nSnakeskin, macro)
+		if plain.Stats.TricksGated != 0 || lost.Stats.TricksGated != 1 || lost.Stats.TricksSide != 0 || containsKey(lost.Keys, MacroKeyPrefix+"veil") || !reflect.DeepEqual(plain.Keys, lost.Keys) {
+			t.Fatalf("own main, a gated macro alone: gated %d -> %d (side %d), keys %v -> %v", plain.Stats.TricksGated, lost.Stats.TricksGated, lost.Stats.TricksSide, plain.Keys, lost.Keys)
+		}
+	}
 	// With HoldUpkeep: in the own upkeep the held casts go first, so Tricks
 	// gates none of them; in the own main phase HoldUpkeep is off and
 	// Tricks gates alone.
@@ -732,6 +805,27 @@ func TestTricksAtTheSearchRoot(t *testing.T) {
 		}
 		if !reflect.DeepEqual(comp.Keys, want.Keys) || comp.Stats.HeldUpkeep != hold.Stats.HeldUpkeep || (comp.Stats.TricksGated == 1) != (w == twMain) || (comp.Stats.HeldUpkeep == 1) != (w == twUpkeep) {
 			t.Fatalf("%s, with HoldUpkeep: keys %v (held %d, gated %d), want %v", trickWindowNames[w], comp.Keys, comp.Stats.HeldUpkeep, comp.Stats.TricksGated, want.Keys)
+		}
+	}
+	// HoldUpkeep's window, the own upkeep: the bot's Giant Growth is held,
+	// pass played and nothing left for Tricks to replace (TricksBot 0, read
+	// from HoldUpkeep's answer). With Giant Growth and Goblin Surprise
+	// exempt from the hold, Tricks drops Giant Growth there, and inside
+	// HoldUpkeep's window pass is played unsearched -- no reroute, though
+	// Goblin Surprise is left (searched above, without HoldUpkeep).
+	{
+		e := ws[twUpkeep]
+		d := e.Pending()
+		bot := payCastOf(t, e, d, nGiantGrowth)
+		held := trickSearch(t, e, bot, true, "", nil, both)
+		if held.Stats.HeldUpkeepBot != 1 || held.Stats.TricksBot != 0 || held.Stats.Searched != 0 || !reflect.DeepEqual(held.Intent, passOf(t, d)) {
+			t.Fatalf("own upkeep, HoldUpkeep, a bot cast: held bot %d, tricks bot %d, searched %d, played %+v", held.Stats.HeldUpkeepBot, held.Stats.TricksBot, held.Stats.Searched, held.Intent)
+		}
+		exempt := func(o *Options) { o.HoldUpkeep, o.HoldUpkeepExempt = true, nGiantGrowth+" | "+nGoblinSurp }
+		ex := trickSearch(t, e, bot, true, "", nil, exempt)
+		if ex.Stats.HeldUpkeepBot != 0 || ex.Stats.TricksBot != 1 || ex.Stats.TricksGated != 1 || ex.Stats.Searched != 0 || ex.NoBot || !reflect.DeepEqual(ex.Intent, passOf(t, d)) {
+			t.Fatalf("own upkeep, HoldUpkeep exempting the tricks, a bot cast: held bot %d, tricks bot %d gated %d, searched %d, no bot %v, played %+v",
+				ex.Stats.HeldUpkeepBot, ex.Stats.TricksBot, ex.Stats.TricksGated, ex.Stats.Searched, ex.NoBot, ex.Intent)
 		}
 	}
 	bad := DefaultOptions()
@@ -816,9 +910,9 @@ func sideOf(e *rules.Engine, d *decision.Decision, p state.PlayerID) []bool {
 }
 
 // checkTargetDrops wants the rule at target decision d to drop exactly the
-// options wantDrop marks (none: nil), and a bot answer picking a dropped one
-// replaced by the first kept option (TricksBot), the target searched
-// (AllKinds) or not.
+// options wantDrop marks (none: nil), a bot answer picking a kept one to
+// stand (TricksBot 0), and a bot answer picking a dropped one replaced by
+// the first kept option (TricksBot), the target searched (AllKinds) or not.
 func checkTargetDrops(t *testing.T, name string, e *rules.Engine, d *decision.Decision, wantDrop []bool) {
 	t.Helper()
 	r := newTrickRule("")
@@ -862,6 +956,13 @@ func checkTargetDrops(t *testing.T, name string, e *rules.Engine, d *decision.De
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%s: targets %v (ok %v) -> %v, want %v", name, keysOf(all), ok, got, want)
+	}
+	// The bot's answer a kept target: not replaced, searched over the kept
+	// targets when two or more are left (else played).
+	kept := trickSearch(t, e, pick(firstKeptAt), true, "", nil)
+	if kept.Stats.TricksBot != 0 || kept.Stats.Searched != btoi(len(want) >= 2) || wantDrop != nil && picksDropped(kept.Intent, wantDrop) ||
+		len(want) < 2 && !reflect.DeepEqual(kept.Intent, pick(firstKeptAt)) {
+		t.Fatalf("%s: the bot's kept target: bot %d, searched %d, played %+v", name, kept.Stats.TricksBot, kept.Stats.Searched, kept.Intent)
 	}
 	if firstDropAt < 0 {
 		return
@@ -956,6 +1057,12 @@ func TestTricksTargets(t *testing.T) {
 			t.Fatalf("Refute's target decision: %s, sides %v", rd.Kind, side)
 		}
 		checkTargetDrops(t, "Refute over both seats' spells", e, rd, side)
+		// Listed too (gated and a counterspell): the counterspell's filter,
+		// the caster's own spell dropped.
+		listed := newTrickRule(nRefute).gate(e, rd)
+		if got := listed.optionDrops(); !reflect.DeepEqual(got, side) {
+			t.Fatalf("Refute listed, over both seats' spells: drops %v, want the caster's own %v", got, side)
+		}
 	}
 	// Refute forced onto the caster's own spell, the only one.
 	{
@@ -1014,11 +1121,11 @@ func trickEnv(t *testing.T, e *rules.Engine, kinds Kinds, tricks *trickRule, opp
 
 // A walk bot's gated cast at an in-walk decision that is no point (neither
 // priority nor a target a searched kind) in a closed window: the searching
-// seat's and the
-// mirrored opponent's are played as pass and counted (TricksWalk,
-// TricksOpp); an unmirrored opponent's stands, uncounted -- its walk-bot
-// answer reads oppTricksRule, never the seat's rule. The walk is cut after
-// the first answer.
+// seat's and the mirrored opponent's walk bots are asked again over what
+// the rule keeps (they pass), and counted (TricksWalk, TricksOpp); an
+// unmirrored opponent's stands, uncounted -- its walk-bot answer reads
+// oppTricksRule, never the seat's rule. The walk is cut after the first
+// answer.
 func TestTricksWalkBotCastAtANonPoint(t *testing.T) {
 	ws := trickWindows(t)
 	kinds := Kinds{Attackers: true, Blockers: true}
@@ -1083,7 +1190,7 @@ func TestTricksObservesDroppedCasts(t *testing.T) {
 
 // firstKept: the answer without its dropped options when the decision
 // accepts it; else the first non-empty set of kept options; else the empty
-// answer when accepted; else none.
+// answer when accepted (Min 0, or AllowNone); else none.
 func TestTricksFirstKept(t *testing.T) {
 	opts := func(n int) []decision.Option {
 		var out []decision.Option
@@ -1094,21 +1201,23 @@ func TestTricksFirstKept(t *testing.T) {
 	}
 	in := func(c ...int) decision.Intent { return decision.Intent{Seq: 1, Choices: c} }
 	for _, tc := range []struct {
-		name     string
-		min, max int
-		drop     []bool
-		bot      decision.Intent
-		want     []int
-		ok       bool
+		name      string
+		min, max  int
+		allowNone bool
+		drop      []bool
+		bot       decision.Intent
+		want      []int
+		ok        bool
 	}{
-		{"two targets, one dropped", 1, 2, []bool{false, true, false}, in(2, 1), []int{2}, true},
-		{"one target, dropped", 1, 1, []bool{true, false, false}, in(0), []int{1}, true},
-		{"up to two, both dropped", 0, 2, []bool{true, true, false}, in(0, 1), []int{2}, true},
-		{"exactly two, one kept", 2, 2, []bool{true, false, false}, in(0, 1), []int{1, 2}, true},
-		{"up to one, all dropped", 0, 1, []bool{true, true, true}, in(1), nil, true},
-		{"one target, all dropped", 1, 1, []bool{true, true, true}, in(1), []int{1}, false},
+		{"two targets, one dropped", 1, 2, false, []bool{false, true, false}, in(2, 1), []int{2}, true},
+		{"one target, dropped", 1, 1, false, []bool{true, false, false}, in(0), []int{1}, true},
+		{"up to two, both dropped", 0, 2, false, []bool{true, true, false}, in(0, 1), []int{2}, true},
+		{"exactly two, one kept", 2, 2, false, []bool{true, false, false}, in(0, 1), []int{1, 2}, true},
+		{"up to one, all dropped", 0, 1, false, []bool{true, true, true}, in(1), nil, true},
+		{"one target, all dropped", 1, 1, false, []bool{true, true, true}, in(1), []int{1}, false},
+		{"one target or none, all dropped", 1, 1, true, []bool{true, true, true}, in(1), nil, true},
 	} {
-		d := &decision.Decision{Seq: 1, Kind: decision.KTarget, Min: tc.min, Max: tc.max, Options: opts(len(tc.drop))}
+		d := &decision.Decision{Seq: 1, Kind: decision.KTarget, Min: tc.min, Max: tc.max, AllowNone: tc.allowNone, Options: opts(len(tc.drop))}
 		got, ok := firstKept(d, tc.bot, tc.drop)
 		if ok != tc.ok || !reflect.DeepEqual(got.Choices, tc.want) && (len(got.Choices) != 0 || len(tc.want) != 0) {
 			t.Fatalf("%s: %v %v, want %v %v", tc.name, got.Choices, ok, tc.want, tc.ok)
@@ -1116,12 +1225,18 @@ func TestTricksFirstKept(t *testing.T) {
 	}
 }
 
-// The prior-only seat plays Search's answer: pass in place of its bot's
-// gated cast.
+// The prior-only seat never plays its bot's gated cast: in the own main
+// phase it plays the prior's argmax over the rerooted candidates (uniform:
+// candidate 0, Pass -- no bot candidate), in the opponent's upkeep the one
+// candidate left, pass.
 func TestTricksPriorSeat(t *testing.T) {
 	ws := trickWindows(t)
-	for _, on := range []bool{false, true} {
-		e := ws[twBotCast].Clone()
+	for _, tc := range []struct {
+		w  int
+		on bool
+	}{{twBotCast, false}, {twBotCast, true}, {twMain, false}, {twMain, true}} {
+		on := tc.on
+		e := ws[tc.w].Clone()
 		d := e.Pending()
 		cast := payCastOf(t, e, d, nGiantGrowth)
 		sc := DefaultSeatConfig()
@@ -1140,7 +1255,7 @@ func TestTricksPriorSeat(t *testing.T) {
 			want = passOf(t, d)
 		}
 		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("prior-only seat, tricks %v: played %+v, want %+v", on, got, want)
+			t.Fatalf("prior-only seat at %s, tricks %v: played %+v, want %+v", trickWindowNames[tc.w], on, got, want)
 		}
 	}
 }
@@ -1174,6 +1289,17 @@ func TestTricksClassify(t *testing.T) {
 		menace   = "Name:Test Menace\nManaCost:R\nTypes:Instant\nA:SP$ Pump | ValidTgts$ Creature | NumAtt$ +1 | KW$ Menace | SpellDescription$ Target creature gets +1/+0 and gains menace.\nOracle:x\n"
 		twoFaces = "Name:Test Squire\nManaCost:1 W\nTypes:Creature Human\nPT:2/2\nAlternateMode:Adventure\nOracle:x\n\nALTERNATE\n\nName:Test Errand\nManaCost:W\nTypes:Instant Adventure\nA:SP$ Pump | ValidTgts$ Creature | NumAtt$ +1 | NumDef$ +1 | SpellDescription$ Target creature gets +1/+1.\nOracle:x\n"
 	)
+	// A list with spaces around its separators, and an empty name.
+	spaced := newTrickRule(" Giant Growth |  | Fleeting Flight ")
+	for _, tc := range []struct {
+		script string
+		gated  bool
+	}{{scriptGiantGrowth, true}, {scriptFlight, true}, {scriptFakeDeath, false}} {
+		c := payWindowCard(t, tc.script)
+		if got := spaced.classify(&state.Object{Card: c}).gated; got != tc.gated || len(spaced.names) != 2 {
+			t.Fatalf("a spaced list %v: %s gated %v, want %v", spaced.names, c.Faces[0].Name, got, tc.gated)
+		}
+	}
 	r := newTrickRule(DefaultTricks + "|Test Sneak|Test Menace|Test Errand")
 	for _, tc := range []struct {
 		script string
@@ -1399,6 +1525,315 @@ func TestTricksOwnTargetPlayers(t *testing.T) {
 		}
 		if got := ownTarget(e, 0, src, nil, false); got != tc.untgtd {
 			t.Fatalf("%s: untargeted, own target %v", trickWindowNames[tc.w], got)
+		}
+	}
+}
+
+// Synthetic target decisions of seat 0's over a real board (its own
+// declare-attackers step: two or more creatures of its own, one or more of
+// the opponent's), enumerated with and without the rule. An unlisted
+// targeted spell (a Burst Lightning-like removal) keeps every target. A
+// listed card's multitarget decision keeps the caster's side only. The
+// filter runs before the cap: with more options than the limit and the
+// opponent's first, the caster's options past the cap are kept, up to the
+// limit (single and multi target).
+func TestTricksTargetEnumerations(t *testing.T) {
+	e := trickWindows(t)[twAttack]
+	bolt := e.G.AddObject(payWindowCard(t, "Name:Test Bolt\nManaCost:R\nTypes:Instant\nA:SP$ DealDamage | ValidTgts$ Any | NumDmg$ 2 | SpellDescription$ Test Bolt deals 2 damage to any target.\nOracle:x\n"), 0).ID
+	var gg state.ObjID
+	for _, id := range e.G.Zone(state.ZHand, 0) {
+		if cardName(e, id) == nGiantGrowth {
+			gg = id
+		}
+	}
+	var own, opp []decision.Option
+	for p := range e.G.Players {
+		for _, id := range e.G.Zone(state.ZBattlefield, state.PlayerID(p)) {
+			if e.IsCreature(id) {
+				o := decision.Option{Kind: "permanent", Obj: id, Player: state.PlayerID(p)}
+				if p == 0 {
+					own = append(own, o)
+				} else {
+					opp = append(opp, o)
+				}
+			}
+		}
+	}
+	if gg == 0 || len(own) < 2 || len(opp) < 1 {
+		t.Fatalf("Giant Growth %d, own creatures %d, opponent's %d", gg, len(own), len(opp))
+	}
+	own = append(own, decision.Option{Kind: "player", Player: 0})
+	opp = append(opp, decision.Option{Kind: "player", Player: 1})
+	target := func(src state.ObjID, min, max int) *decision.Decision {
+		d := &decision.Decision{Seq: 1, Player: 0, Kind: decision.KTarget, Min: min, Max: max, Source: src, TargetEffect: &decision.TargetEffect{API: "Pump"}}
+		for _, o := range append(append([]decision.Option(nil), opp...), own...) {
+			o.Index = len(d.Options)
+			d.Options = append(d.Options, o)
+		}
+		return d
+	}
+	// isOpp reports whether option index c is the opponent's (they come first).
+	isOpp := func(c int) bool { return c < len(opp) }
+	enum := func(d *decision.Decision, bot decision.Intent, kinds Kinds, limit int, on bool) ([]cand, bool) {
+		if on {
+			kinds = trickKinds(kinds, "")
+		}
+		cands, _, _, ok, _ := enumerateCut(searchprobe.NewCollector(0), e, d, bot, kinds, limit, true)
+		return cands, ok
+	}
+	pick := func(c ...int) decision.Intent { return decision.Intent{Seq: 1, Player: 0, Choices: c} }
+	firstOwn := len(opp)
+
+	// The removal, on the opponent's creature: every target kept.
+	{
+		d := target(bolt, 1, 1)
+		d.TargetEffect = &decision.TargetEffect{API: "DealDamage"}
+		off, okOff := enum(d, pick(0), AllKinds(), BenchCandidateLimit, false)
+		on, okOn := enum(d, pick(0), AllKinds(), BenchCandidateLimit, true)
+		if !okOff || !okOn || len(off) != len(d.Options) || !reflect.DeepEqual(keysOf(on), keysOf(off)) {
+			t.Fatalf("an unlisted removal: targets %v -> %v (ok %v %v)", keysOf(off), keysOf(on), okOff, okOn)
+		}
+	}
+	// A listed card's multitarget decision (up to two): no set with the
+	// opponent's creature.
+	{
+		d := target(gg, 1, 2)
+		off, okOff := enum(d, pick(firstOwn), FullKinds(), BenchCandidateLimit, false)
+		on, okOn := enum(d, pick(firstOwn), FullKinds(), BenchCandidateLimit, true)
+		withOpp := func(cs []cand) bool {
+			for _, c := range cs {
+				for _, x := range c.in.Choices {
+					if isOpp(x) {
+						return true
+					}
+				}
+			}
+			return false
+		}
+		n := len(own)
+		if !okOff || !okOn || !withOpp(off) || withOpp(on) || len(on) != n+n*(n-1)/2 {
+			t.Fatalf("a listed multitarget decision: %d sets (ok %v, the opponent's in one %v) -> %d (ok %v, %v), want the %d own sets",
+				len(off), okOff, withOpp(off), len(on), okOn, withOpp(on), n+n*(n-1)/2)
+		}
+	}
+	// More options than the limit, the opponent's (two or more) first: the
+	// own options past the cap are kept, the limit holds -- through
+	// enumerateCut, which enumerates one past the limit, and in
+	// enumerateLimit itself.
+	for _, tc := range []struct {
+		name     string
+		max      int
+		kinds    Kinds
+		limit    int
+		wantSets [][]int
+	}{
+		{"single target", 1, AllKinds(), 2, [][]int{{firstOwn}, {firstOwn + 1}}},
+		{"multitarget", 2, FullKinds(), 3, [][]int{{firstOwn}, {firstOwn + 1}, {firstOwn + 2}}},
+	} {
+		d := target(gg, 1, tc.max)
+		on, ok := enum(d, pick(firstOwn), tc.kinds, tc.limit, true)
+		var got [][]int
+		for _, c := range on {
+			got = append(got, c.in.Choices)
+		}
+		if !ok || !reflect.DeepEqual(got, tc.wantSets) {
+			t.Fatalf("%s over %d options, limit %d: %v (ok %v), want %v", tc.name, len(d.Options), tc.limit, got, ok, tc.wantSets)
+		}
+		capped, _, _, okCap := enumerateLimit(searchprobe.NewCollector(0), e, d, pick(firstOwn), trickKinds(tc.kinds, ""), 2, true, nil)
+		got = nil
+		for _, c := range capped {
+			got = append(got, c.in.Choices)
+		}
+		if !okCap || !reflect.DeepEqual(got, tc.wantSets[:2]) {
+			t.Fatalf("%s over %d options, enumerated at limit 2: %v (ok %v), want %v", tc.name, len(d.Options), got, okCap, tc.wantSets[:2])
+		}
+	}
+}
+
+// trickPosition is a clone of the first trickDeck position (playTricks,
+// creatures from turn 0) at a priority decision of seat p's that want
+// accepts, its payment plans built; want sees the auto-pay bot's answer.
+func trickPosition(t *testing.T, name string, p state.PlayerID, want func(e *rules.Engine, d *decision.Decision, bot decision.Intent) bool) *rules.Engine {
+	t.Helper()
+	var found *rules.Engine
+	playTricks(t, 0, func(e *rules.Engine, d *decision.Decision) bool {
+		if d.Kind != decision.KPriority || d.Player != p {
+			return true
+		}
+		if want(e, d, autoPayBot(t, e, d)) {
+			found = e.Clone()
+			found.EnsurePaymentActions()
+			return false
+		}
+		return true
+	})
+	if found == nil {
+		t.Fatalf("no position: %s", name)
+	}
+	return found
+}
+
+// handCount counts seat p's cards in hand named name.
+func handCount(e *rules.Engine, p state.PlayerID, name string) int {
+	n := 0
+	for _, id := range e.G.Zone(state.ZHand, p) {
+		if cardName(e, id) == name {
+			n++
+		}
+	}
+	return n
+}
+
+// A walk bot's answer the rule drops at a priority decision is asked again
+// over what the rule keeps (reask), at a decision that is no point, the
+// walk cut after the one answer:
+//
+//   - listing Test Bear, a seat's bot casting a bear in its own main phase
+//     casts another spell when asked again, the bears kept in hand -- the
+//     searching seat's (TricksWalk 1) and a mirrored opponent's (TricksOpp
+//     1);
+//   - the default list, where the bot casts a gated trick and, asked over
+//     the kept options on a board that still called the trick castable,
+//     would tap mana for it (the auto-pay bot's manual path): the dropped
+//     cards are uncastable to it, so it taps nothing and passes;
+//   - with mana floating the dropped legacy casts are the first options:
+//     the answer asked again is mapped back onto the decision's own indices
+//     (pass), or casts another spell (Goblin Surprise); and where the bot's
+//     own answer is no dropped cast (a mana activation) it answers the same
+//     over the kept options;
+//   - inside HoldUpkeep's window the rule's own answer stands.
+func TestTricksWalkReasksTheBot(t *testing.T) {
+	ws := trickWindows(t)
+	kinds := Kinds{Attackers: true, Blockers: true}
+	// Listing Test Bear, each seat (seat 1 the mirrored opponent).
+	for _, p := range []state.PlayerID{0, 1} {
+		e := trickPosition(t, "a seat casts a bear in its own main phase, another spell castable", p, func(e *rules.Engine, d *decision.Decision, bot decision.Intent) bool {
+			c := castableNames(e, d)
+			return e.G.Active == p && e.G.Step == state.StepMain1 && len(e.G.Stack) == 0 && castName(e, d, bot) == nBear && (c[nFakeDeath] || c[nGoblinSurp])
+		})
+		for _, on := range []bool{false, true} {
+			var rule *trickRule
+			if on {
+				rule = newTrickRule(nBear)
+			}
+			bears := handCount(e, p, nBear)
+			env, st := trickEnv(t, e, kinds, rule, p == 1, 1)
+			if pt, err := env.advance(); err != nil || pt != nil || !env.capped {
+				t.Fatalf("seat %d, bears listed %v: point %v, err %v, capped %v", p, on, pt, err, env.capped)
+			}
+			g := env.e.G
+			var top string
+			if len(g.Stack) == 1 && g.Obj(g.Stack[0]).Controller == p {
+				top = cardName(env.e, g.Stack[0])
+			}
+			counted := st.TricksWalk
+			if p == 1 {
+				counted = st.TricksOpp
+			}
+			if on && (top == "" || top == nBear || handCount(env.e, p, nBear) != bears || counted != 1) || !on && top != nBear {
+				t.Fatalf("seat %d, bears listed %v: the walk's answer put %q on the stack (stack %v), bears in hand %d -> %d, walk %d opponent %d",
+					p, on, top, g.Stack, bears, handCount(env.e, p, nBear), st.TricksWalk, st.TricksOpp)
+			}
+		}
+	}
+	// The default list: the dropped tricks uncastable to the bot asked again.
+	{
+		e := trickPosition(t, "seat 0 casts a gated trick in a closed window, asked again on an unmarked board taps mana", 0, func(e *rules.Engine, d *decision.Decision, bot decision.Intent) bool {
+			r := newTrickRule("")
+			if _, dropped := r.answer(e, d, bot); !dropped || !gatedTricks[castName(e, d, bot)] || len(e.G.Stack) != 0 {
+				return false
+			}
+			kept, back, _, ok := r.keptPriority(e, d)
+			if !ok {
+				return false
+			}
+			in, err := seat.NewBot(7).EnableAutoPayMana().DecideBoard(context.Background(), botpolicy.BoardFromGame(e.G, e, 0), kept)
+			if err != nil || len(in.Choices) != 1 || in.Choices[0] < 0 || in.Choices[0] >= len(back) {
+				return false
+			}
+			for _, o := range d.Options {
+				if o.Index == back[in.Choices[0]] {
+					return o.Kind == "activate"
+				}
+			}
+			return false
+		})
+		for _, on := range []bool{false, true} {
+			var rule *trickRule
+			if on {
+				rule = newTrickRule("")
+			}
+			prisms := untappedPrisms(e, 0)
+			env, st := trickEnv(t, e, kinds, rule, false, 1)
+			if pt, err := env.advance(); err != nil || pt != nil || !env.capped {
+				t.Fatalf("a gated trick, rule %v: point %v, err %v, capped %v", on, pt, err, env.capped)
+			}
+			cast := len(env.e.G.Stack) > 0
+			if on && (cast || untappedPrisms(env.e, 0) != prisms || st.TricksWalk != 1) || !on && !cast {
+				t.Fatalf("a gated trick, rule %v: cast %v, untapped Prisms %d -> %d, walk %d", on, cast, prisms, untappedPrisms(env.e, 0), st.TricksWalk)
+			}
+		}
+	}
+	// Mana floating (G and W): Fleeting Flight's and Giant Growth's legacy
+	// casts are the first options, and the bot casts Fleeting Flight. In
+	// the own end of combat (no payment plans built: the auto-pay bot's own
+	// turn outside a main phase) the bot asked again passes, mapped back
+	// onto the decision's index for pass. In the opponent's beginning of
+	// combat (plans built) it casts Goblin Surprise instead.
+	for _, tc := range []struct {
+		w    int
+		want string
+	}{{twEndCombat, ""}, {twOppBegin, nGoblinSurp}} {
+		name := trickWindowNames[tc.w] + ", G and W floating"
+		e := ws[tc.w].Clone()
+		floatMana(t, e, "G")
+		d := floatMana(t, e, "W")
+		if bot := autoPayBot(t, e, d); castName(e, d, bot) != nFlight || d.Options[0].Kind != "cast" {
+			t.Fatalf("%s: the bot plays %s, option 0 %s", name, CandidateLabel(d, bot), d.Options[0].Label)
+		}
+		prisms, flights, growths := untappedPrisms(e, 0), handCount(e, 0, nFlight), handCount(e, 0, nGiantGrowth)
+		env, st := trickEnv(t, e, kinds, newTrickRule(""), false, 1)
+		if pt, err := env.advance(); err != nil || pt != nil || !env.capped {
+			t.Fatalf("%s: point %v, err %v, capped %v", name, pt, err, env.capped)
+		}
+		g := env.e.G
+		var top string
+		if len(g.Stack) == 1 && g.Obj(g.Stack[0]).Controller == 0 {
+			top = cardName(env.e, g.Stack[0])
+		}
+		passed := len(g.Stack) == 0 && env.e.Pending().Player == 1
+		if top != tc.want || tc.want == "" && !passed || untappedPrisms(env.e, 0) != prisms || handCount(env.e, 0, nFlight) != flights ||
+			handCount(env.e, 0, nGiantGrowth) != growths || st.TricksWalk != 1 {
+			t.Fatalf("%s: the walk put %q on the stack (stack %v, passed %v), untapped Prisms %d -> %d, Fleeting Flights %d -> %d, Giant Growths %d -> %d, walk %d; want %q",
+				name, top, g.Stack, passed, prisms, untappedPrisms(env.e, 0), flights, handCount(env.e, 0, nFlight), growths, handCount(env.e, 0, nGiantGrowth), st.TricksWalk, tc.want)
+		}
+	}
+	{
+		e := ws[twMain].Clone()
+		floatMana(t, e, "G")
+		d := floatMana(t, e, "W")
+		bot := autoPayBot(t, e, d)
+		if _, dropped := newTrickRule("").answer(e, d, bot); dropped || d.Options[0].Kind != "cast" || len(bot.Choices) != 1 || d.Options[bot.Choices[0]].Kind != "activate" {
+			t.Fatalf("own main, G and W floating: the bot plays %s (dropped %v), option 0 %s", CandidateLabel(d, bot), dropped, d.Options[0].Label)
+		}
+		env, _ := trickEnv(t, e, kinds, newTrickRule(""), false, 1)
+		pd := env.e.Pending()
+		if got := env.reask(pd, env.cfg.kinds.tricks, nil, passOf(t, pd)); !reflect.DeepEqual(got.Choices, bot.Choices) {
+			t.Fatalf("own main, G and W floating: asked again %s, want the bot's own %s", CandidateLabel(pd, got), CandidateLabel(pd, bot))
+		}
+	}
+	// HoldUpkeep's window (the own upkeep): reask keeps the rule's answer
+	// there, the bot unasked; without HoldUpkeep the bot is asked again
+	// (it passes). The rule's answer here is a marker, no real one.
+	{
+		e := ws[twUpkeep]
+		env, _ := trickEnv(t, e, kinds, newTrickRule(""), false, 1)
+		pd := env.e.Pending()
+		marker := decision.Intent{Seq: pd.Seq, Player: pd.Player, Choices: []int{-7}}
+		free := env.reask(pd, env.cfg.kinds.tricks, nil, marker)
+		held := env.reask(pd, env.cfg.kinds.tricks, newHoldUpkeep(""), marker)
+		if !reflect.DeepEqual(free, passOf(t, pd)) || !reflect.DeepEqual(held, marker) {
+			t.Fatalf("own upkeep: asked again %+v without HoldUpkeep (want pass), %+v with it (want the rule's own answer)", free, held)
 		}
 	}
 }

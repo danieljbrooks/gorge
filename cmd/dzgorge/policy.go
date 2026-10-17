@@ -85,10 +85,12 @@ import (
 //	                             gated card's cast (by default FDN's Giant Growth, Sure Strike, Bulk Up, Claws
 //	                             Out, Goblin Surprise, Snakeskin Veil, Divine Resilience, Fake Your Own
 //	                             Death, Celestial Armor and Fleeting Flight; =NAMES replaces the list,
-//	                             '|'-separated, a card matching by any face's name, a name holding no colon)
-//	                             is a candidate only with something on the stack, or from declare attackers
-//	                             through combat damage once a creature is attacking; a card granting evasion
-//	                             (Fleeting Flight's flying) also at its controller's own beginning of combat.
+//	                             '|'-separated, a name holding no colon; a card matches when any of its faces'
+//	                             names is listed, an adventurer by its adventure's) is a candidate only with
+//	                             an object an opponent controls on the stack (the caster's own spells and
+//	                             abilities open nothing), or from declare attackers through combat damage
+//	                             once a creature is attacking; a card granting evasion (Fleeting Flight's
+//	                             flying) also at its controller's own beginning of combat.
 //	                             Goblin Surprise, a modal spell whose token mode is no trick, is cast freely
 //	                             and only its pump mode is gated, at its modes decision. Side checks: a gated
 //	                             card is no candidate when no permanent of its caster's is a legal target (a
@@ -99,13 +101,20 @@ import (
 //	                             list) is no candidate unless an opponent's spell is a legal target, and at
 //	                             its target decision the caster's own spells are dropped when an
 //	                             opponent's is offered. At the seat's root and its points inside a
-//	                             simulation, and with :oppnodes:oppfull at the opponent's too; a bot answer
-//	                             the rule drops is played as pass, or as the first kept targets or modes.
-//	                             Composes with :holdupkeep. play's summary counts the roots changed as
-//	                             az_tricks_gated_roots and az_tricks_side_roots, the bot answers replaced as
-//	                             az_tricks_bot_passes, and the decisions changed inside simulations as
-//	                             az_tricks_walk and az_tricks_opp. An az and prior key (azmcts
-//	                             Options.Tricks, TricksCards)
+//	                             simulation, and with :oppnodes:oppfull at the opponent's too. A bot cast the
+//	                             rule drops at a root is never searched: with :autopay the root is searched
+//	                             over what is left with no bot candidate (as the bot-tap reroute; -declog's
+//	                             rerooted), pass played when it is all that is left; pass in :holdupkeep's
+//	                             own upkeep and draw window and without :autopay. Inside a
+//	                             simulation the bot is asked again over what the rule keeps; a dropped
+//	                             target or mode is replaced by the first kept ones. Composes with
+//	                             :holdupkeep. Not applied where the seat does not search: its fallbacks
+//	                             when the observation feed stops or a root is refused, sims=0, and an
+//	                             opponent without :oppfull inside simulations. play's summary counts the
+//	                             roots changed as az_tricks_gated_roots and az_tricks_side_roots, the bot
+//	                             answers replaced as az_tricks_bot_replaced, and the decisions changed
+//	                             inside simulations as az_tricks_walk and az_tricks_opp. An az and prior key
+//	                             (azmcts Options.Tricks, TricksCards)
 //	   :topk=K                   the network chooses the candidates: every searched decision (the root
 //	                             and every one inside a simulation) is enumerated in full and the bot's
 //	                             answer is kept with the K-1 others the network's prior ranks highest,

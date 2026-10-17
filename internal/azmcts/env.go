@@ -496,7 +496,8 @@ func (e *engineEnv) advance() (*Point, error) {
 			// the rule changes, a dropped candidate or (heldAnswer) a bot
 			// answer that casts a held spell, outside the held candidates,
 			// replaced by pass. Options.Tricks: Stats.TricksWalk, the same
-			// for what it drops (trickRule.answer).
+			// for what it drops (trickRule.answer; at a priority decision
+			// the bot asked again, reask).
 			hold, tricks := e.cfg.kinds.hold, e.cfg.kinds.tricks
 			drops, tdrops := hold.drops(), tricks.drops()
 			cands, kind, _, ok, cut := enumerateCutInto(e.obs, e.e, pd, in, e.cfg.kinds, e.cfg.enumLimit(), e.cfg.autoPayment, e.cfg.enumBoard)
@@ -506,7 +507,7 @@ func (e *engineEnv) advance() (*Point, error) {
 					hold.count()
 				}
 				if alt, dropped := tricks.answer(e.e, pd, in); dropped {
-					in = alt
+					in = e.reask(pd, tricks, hold, alt)
 					tricks.count()
 				}
 			}
@@ -556,7 +557,7 @@ func (e *engineEnv) advance() (*Point, error) {
 					hold.count()
 				}
 				if alt, dropped := tricks.answer(e.e, pd, in); dropped {
-					in = alt
+					in = e.reask(pd, tricks, hold, alt)
 					tricks.count()
 				}
 			}
@@ -585,6 +586,53 @@ func (e *engineEnv) advance() (*Point, error) {
 		e.plies++
 		e.cfg.stats.EnvSteps++
 	}
+}
+
+// reask is the walk's answer at decision pd in place of its bot's answer,
+// which the rule tricks drops (alt is the rule's own answer, trickRule.answer:
+// pass, or the first kept targets or modes). At a priority decision outside
+// hold's window (holdUpkeep.on: there only instants are castable and pass
+// costs nothing) the seat's walk bot -- the one that answered pd, asked the
+// same way -- is asked again over what the rule keeps (keptPriority), on a
+// board refilled with the dropped cards marked uncastable, so it neither
+// casts nor taps mana for them; its answer is mapped back onto pd. Anywhere
+// else alt: a target or modes bot is not asked again. It records nothing
+// (the caller counts).
+func (e *engineEnv) reask(pd *decision.Decision, tricks *trickRule, hold *holdUpkeep, alt decision.Intent) decision.Intent {
+	if hold.on(e.e, pd) {
+		return alt
+	}
+	kept, back, dropped, ok := tricks.keptPriority(e.e, pd)
+	if !ok {
+		return alt
+	}
+	// The board's tables are e.board's, refilled before the next bot
+	// answer, so the marks die with this one.
+	b := botpolicy.BoardFromGameInto(e.e.G, e.e, pd.Player, e.board)
+	for _, id := range dropped {
+		if c := b.Cards.Ref(id); c != nil {
+			c.Castable = false
+		}
+	}
+	var in decision.Intent
+	if pd.Player == e.cfg.actor && e.actorBot != nil {
+		in, _ = e.actorBot.DecideBoard(context.Background(), b, kept)
+	} else if ob := e.oppBot(pd.Player); ob != nil {
+		in, _ = ob.DecideBoard(context.Background(), b, kept)
+	} else {
+		in = botpolicy.Decide(b, &kept, e.rngs[pd.Player])
+	}
+	if len(in.Choices) > 0 {
+		choices := make([]int, len(in.Choices))
+		for i, c := range in.Choices {
+			if c < 0 || c >= len(back) {
+				return alt
+			}
+			choices[i] = back[c]
+		}
+		in.Choices = choices
+	}
+	return in
 }
 
 // oppKeyPrefix marks an opponent's candidate key (Options.OpponentNodes).

@@ -252,7 +252,9 @@ func (s *Seat) Decide(ctx context.Context, v view.View, d decision.Decision) (de
 }
 
 // DecideBoard is the driver's fallback when the seat's observation feed has
-// stopped: the wrapped bot, counted (FeedStopped) so it is never silent.
+// stopped: the wrapped bot, counted (FeedStopped) so it is never silent. It
+// never reaches Search, so Options.HoldUpkeep and Options.Tricks do not bind
+// its answer.
 func (s *Seat) DecideBoard(ctx context.Context, b botpolicy.Board, d decision.Decision) (decision.Intent, error) {
 	if Watch != nil {
 		Watch(Diag{Stats: Stats{FeedStopped: 1}, Seed: s.seed, Seq: d.Seq})
@@ -264,6 +266,7 @@ func (s *Seat) DecideBoard(ctx context.Context, b botpolicy.Board, d decision.De
 // whose honest root refused to build (reason is the builder's): the wrapped
 // bot, counted as FeedStopped (its historical meaning: the driver routed
 // around the search) and as RootRefused, with the reason in Diag.Refused.
+// Like DecideBoard it bypasses Options.HoldUpkeep and Options.Tricks.
 func (s *Seat) DecideRootRefused(ctx context.Context, b botpolicy.Board, d decision.Decision, reason string) (decision.Intent, error) {
 	if Watch != nil {
 		Watch(Diag{Stats: Stats{FeedStopped: 1, RootRefused: 1}, Refused: reason, Seed: s.seed, Seq: d.Seq})
@@ -288,6 +291,8 @@ func (s *Seat) DecideSearch(ctx context.Context, env searchseat.Env, d decision.
 		return s.decidePrior(ctx, env, d, botIn)
 	}
 	if s.cfg.Search.Sims <= 0 || env.Engine == nil {
+		// No Search: the wrapped bot's answer, Options.HoldUpkeep and
+		// Options.Tricks unapplied.
 		return botIn, nil
 	}
 	var t0 float64
@@ -413,7 +418,10 @@ func (s *Seat) DigestFree() bool { return true }
 // decidePrior is the PriorOnly seat's decision: the candidates Search would
 // build, answered by the argmax of the network prior (ties on the lowest
 // index). A decision Search would not search is the bot's (under
-// Options.HoldUpkeep, pass in place of a held cast).
+// Options.HoldUpkeep, pass in place of a held cast; under Options.Tricks,
+// Search's answer in place of a dropped one). Candidate 0 is the bot's
+// answer unless the root has no bot candidate (Result.NoBot: Options.Tricks
+// rerooted a dropped bot cast), where it is played as itself.
 func (s *Seat) decidePrior(ctx context.Context, env searchseat.Env, d decision.Decision, botIn decision.Intent) (decision.Intent, error) {
 	obs := searchprobe.NewCollector(d.Player)
 	opts := s.cfg.Search
@@ -437,7 +445,7 @@ func (s *Seat) decidePrior(ctx context.Context, env searchseat.Env, d decision.D
 	if Watch != nil {
 		Watch(Diag{Turn: env.Engine.G.Turn, Kind: res.Kind, Candidates: len(res.Candidates), Choice: best, Stats: res.Stats})
 	}
-	if best == 0 {
+	if best == 0 && !res.NoBot {
 		return botIn, nil
 	}
 	return res.Candidates[best], nil

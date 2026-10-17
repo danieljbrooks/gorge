@@ -198,10 +198,14 @@ func countTopK(st *Stats, ranked bool, before int) {
 // src for a world. If every simulation fails, the bot's intent is played and
 // Stats.AllFailed is 1. (Under Options.HoldUpkeep a bot intent that casts a
 // held spell is replaced by pass on each of these paths,
-// Stats.HeldUpkeepBot; under Options.Tricks one the rule drops by pass or
-// the first kept options, Stats.TricksBot.) The error return is reserved
-// for misconfiguration (invalid options or network, a missing root field or
-// source).
+// Stats.HeldUpkeepBot. Under Options.Tricks a bot intent the rule drops is
+// replaced, Stats.TricksBot: at a priority root under AutoPayment outside
+// HoldUpkeep's window the root is searched over what the rule leaves with no
+// bot candidate, as under Root.NoBot -- pass, which the rule never drops, is
+// played when it is the one candidate left and on every failure path -- and
+// elsewhere pass or the first kept options are played.) The error return is
+// reserved for misconfiguration (invalid options or network, a missing root
+// field or source).
 //
 // net nil is generation 0: a uniform prior and the heuristic leaf. With a
 // live ctx the result is a pure function of (root position, bot answer, net,
@@ -254,19 +258,34 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 	if opts.Tricks {
 		kinds.tricks = newTrickRule(opts.TricksCards)
 	}
+	// The bot's answer the rules leave: HoldUpkeep's pass in place of a held
+	// cast (heldAnswer), then Tricks' answer in place of what it drops
+	// (trickRule.answer), read from the answer HoldUpkeep left. A dropped
+	// answer outside HoldUpkeep's window (where only instants are castable
+	// and pass costs nothing) reroots the root (Root.NoBot): a priority root
+	// under AutoPayment with priority searched -- the full root, rootCands
+	// -- is searched over the vocabulary the rule leaves with no bot
+	// candidate, so the seat's other casts and abilities are still weighed;
+	// with fewer than two candidates left the root is skipped and the one
+	// left, pass, played. Any other root ignores NoBot and is skipped.
+	heldIn, held := kinds.hold.heldAnswer(root.Engine, root.Decision, root.Bot)
+	trickIn, trickDropped := kinds.tricks.answer(root.Engine, root.Decision, heldIn)
+	if trickDropped && !kinds.hold.on(root.Engine, root.Decision) {
+		root.NoBot = true
+	}
 	cands, kind, why, ok, cut, botFound := rootCands(root.Observer, root, kinds, limit, opts.AutoPayment, &enumBoard)
 	res.Kind = kind
-	// heldBot: the bot's answer is a cast the rule holds, outside the held
-	// candidates; pass is played in its place wherever the bot's answer
-	// would be (heldAnswer). Options.Tricks then does the same for what it
-	// drops (trickRule.answer), from the answer HoldUpkeep left.
+	// heldBot: the bot's answer is a cast a rule drops, outside the
+	// candidates; the rule's answer is played in its place wherever the
+	// bot's answer would be (every failure path), and the search's choice
+	// is played even at candidate 0.
 	heldBot := false
 	if h := kinds.hold; h != nil {
 		if h.dropped > 0 {
 			res.Stats.HeldUpkeep = 1
 		}
-		if pass, held := h.heldAnswer(root.Engine, root.Decision, root.Bot); held {
-			res.Intent, heldBot = pass, true
+		if held {
+			res.Intent, heldBot = heldIn, true
 			res.Stats.HeldUpkeepBot = 1
 		}
 	}
@@ -277,8 +296,8 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 		if tr.sideN > 0 {
 			res.Stats.TricksSide = 1
 		}
-		if alt, dropped := tr.answer(root.Engine, root.Decision, res.Intent); dropped {
-			res.Intent, heldBot = alt, true
+		if trickDropped {
+			res.Intent, heldBot = trickIn, true
 			res.Stats.TricksBot = 1
 		}
 	}

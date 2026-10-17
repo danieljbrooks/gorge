@@ -15,21 +15,24 @@ import (
 // was cast after attackers were declared). The pumps Giant Growth, Sure
 // Strike, Bulk Up, Claws Out and Goblin Surprise (its pump mode only), the
 // protection spells Snakeskin Veil, Divine Resilience, Fake Your Own Death
-// and Celestial Armor, and the evasion spell Fleeting Flight.
+// and Celestial Armor, and the evasion spell Fleeting Flight. A card is
+// matched by any of its faces' names (an adventurer by its adventure's).
 const DefaultTricks = "Giant Growth|Sure Strike|Bulk Up|Claws Out|Goblin Surprise|Snakeskin Veil|Divine Resilience|" +
 	"Fake Your Own Death|Celestial Armor|Fleeting Flight"
 
 // trickRule is Options.Tricks inside one Search (DraftZero). It has two
 // parts.
 //
-// The timing gate: a cast of a gated card (a listed name, any face) is a
-// candidate only in a trick window: with something on the stack (the spell
-// being cast aside), or in the declare-attackers, declare-blockers or
-// combat-damage step once a creature is attacking. A card that grants an
-// evasion keyword (Fleeting Flight's flying; grantsEvasion) also has its
-// controller's own beginning of combat. A gated Charm with a mode that is
-// not a trick (Goblin Surprise's tokens) is cast freely, and its trick modes
-// (trickSA) are gated at its modes decision instead.
+// The timing gate: a cast of a gated card (a card any of whose faces' names
+// is listed) is a candidate only in a trick window: with an object an
+// opponent controls on the stack (a spell or an ability; the caster's own
+// never opens it, the spell being cast included), or in the
+// declare-attackers, declare-blockers or combat-damage step once a creature
+// is attacking. A card that grants an evasion keyword (Fleeting Flight's
+// flying; grantsEvasion) also has its controller's own beginning of combat.
+// A gated Charm with a mode that is not a trick (Goblin Surprise's tokens)
+// is cast freely, and its trick modes (trickSA) are gated at its modes
+// decision instead.
 //
 // The side checks: every gated card is beneficial to its target, so its cast
 // is no candidate when no permanent of its caster's (or the caster) is a
@@ -47,11 +50,34 @@ const DefaultTricks = "Giant Growth|Sure Strike|Bulk Up|Claws Out|Goblin Surpris
 // candidate list is built: the priority vocabularies (payment casts, legacy
 // and manual "cast" options), the full root's macros, and the target,
 // multitarget and modes enumerations. A bot answer the rule drops is outside
-// the candidates, so the decision is not searched and answer plays in its
-// place pass (priority) or the first set of kept options (a target or modes
-// decision). Search hangs the rule on its Kinds (Kinds.tricks) as it does
+// the candidates, so it is never searched. In its place (answer, Search,
+// engineEnv.advance):
+//
+//   - at a priority root under AutoPayment (priority a searched kind),
+//     outside HoldUpkeep's own upkeep and draw window, the root is searched
+//     over what the rule leaves with no bot candidate (Root.NoBot, the
+//     bot-tap reroute's full root), so the seat's other casts and abilities
+//     are still weighed; with fewer than two candidates left the one left,
+//     pass (the rule never drops it), is played;
+//   - at a priority decision inside a simulation (the seat's, a mirrored
+//     opponent's walk bot), outside HoldUpkeep's window, the walk bot is
+//     asked again over what the rule leaves (keptPriority, reask);
+//   - anywhere else, pass at a priority decision (a priority root without
+//     AutoPayment or not searched, or inside HoldUpkeep's window) and the
+//     first set of kept options at a target or modes decision (firstKept;
+//     the bot is not asked again there).
+//
+// Search hangs the rule on its Kinds (Kinds.tricks) as it does
 // HoldUpkeep's; an opponent's in-walk points use it only under
 // OpponentMirror (walkConfig.oppTricks). nil is off.
+//
+// The rule binds Search and the walk only. The seat's paths that never
+// reach Search play the wrapped bot's answer unruled: DecideBoard (the
+// driver's fallback once the observation feed has stopped),
+// DecideRootRefused (an honest root that refused to build), and
+// DecideSearch with Sims <= 0 or no engine. So does an unmirrored
+// opponent's walk bot, and its points under OpponentNodes without
+// OpponentMirror are enumerated with no rule.
 type trickRule struct {
 	// names is the gated list (Options.TricksCards, else DefaultTricks).
 	// Lookup only -- never ranged.
@@ -70,7 +96,7 @@ type trickRule struct {
 
 // trickFace is what the rule knows about one card face.
 type trickFace struct {
-	gated    bool // a listed name (any of the card's faces)
+	gated    bool // a listed name: any of the card's faces' names
 	modal    bool // a gated Charm with a mode that is no trick: its cast is free, its trick modes are gated
 	counter  bool // its spell is SP$ Counter with TargetType$ Spell
 	evasion  bool // its spell grants an evasion keyword: its controller's own beginning of combat too
@@ -170,12 +196,9 @@ func (r *trickRule) classify(o *state.Object) trickFace {
 // first need, and what an enumeration there dropped. The zero value (a nil
 // rule) drops nothing.
 type trickGate struct {
-	r *trickRule
-	e *rules.Engine
-	d *decision.Decision
-	// exclude is the spell being cast at a modes or target decision (on
-	// the stack already, CR 601.2a), which does not open the window.
-	exclude      state.ObjID
+	r            *trickRule
+	e            *rules.Engine
+	d            *decision.Decision
 	read         bool
 	win, flight  bool
 	gated, sided bool
@@ -186,23 +209,22 @@ func (r *trickRule) gate(e *rules.Engine, d *decision.Decision) trickGate {
 	if r == nil || e == nil || d == nil {
 		return trickGate{}
 	}
-	g := trickGate{r: r, e: e, d: d}
-	if d.Kind != decision.KPriority {
-		g.exclude = d.Source
-	}
-	return g
+	return trickGate{r: r, e: e, d: d}
 }
 
 // window reports whether the trick window is open at the gate's decision:
-// something on the stack (the excluded spell aside), or an attacking
-// creature in the declare-attackers, declare-blockers or combat-damage
-// step; with evasion also the decider's own beginning of combat.
+// an object on the stack that an opponent of the decider controls (a spell
+// or an ability), or an attacking creature in the declare-attackers,
+// declare-blockers or combat-damage step; with evasion also the decider's
+// own beginning of combat. The decider's own stack objects never open it:
+// its spells and abilities, and at a modes or target decision the spell it
+// is casting (on the stack already, CR 601.2a, under its control).
 func (g *trickGate) window(evasion bool) bool {
 	if !g.read {
 		g.read = true
 		gm := g.e.G
 		for _, id := range gm.Stack {
-			if id != g.exclude {
+			if o := gm.Obj(id); o != nil && o.Controller != g.d.Player {
 				g.win = true
 				break
 			}
@@ -530,12 +552,15 @@ func firstKept(d *decision.Decision, in decision.Intent, drop []bool) (decision.
 	return in, false
 }
 
-// answer is the answer the rule plays in place of the bot's answer in at
-// decision d of engine e: where in is a cast, a target or a mode the rule
-// drops, in is outside the candidates, so the decision is not searched and
-// pass (a priority decision) or the first kept options (firstKept: a target
-// or modes decision) are played instead (ok true). Anywhere else, or with no
-// such answer, ok is false and in stands. It records nothing (count does).
+// answer is the rule's answer in place of the bot's answer in at decision d
+// of engine e: where in is a cast, a target or a mode the rule drops, in is
+// outside the candidates, so it is never searched, and ok is true with pass
+// (a priority decision) or the first kept options (firstKept: a target or
+// modes decision). Anywhere else, or with no such answer (no pass offered),
+// ok is false and in stands. It records nothing (count does). At a priority
+// decision pass is the fallback: outside HoldUpkeep's window Search reroots
+// the root over the vocabulary the rule leaves, and the walk asks its bot
+// again (reask).
 func (r *trickRule) answer(e *rules.Engine, d *decision.Decision, in decision.Intent) (decision.Intent, bool) {
 	if r == nil || e == nil || d == nil {
 		return in, false
@@ -579,6 +604,41 @@ func passAnswer(d *decision.Decision) (decision.Intent, bool) {
 		}
 	}
 	return decision.Intent{}, false
+}
+
+// keptPriority is priority decision d of engine e as the rule leaves it, to
+// ask a walk bot again over (engineEnv.reask): a copy of d without the
+// "cast" options dropsOption drops -- the others renumbered in order, back
+// mapping each new index to d's own (the bot answers by index) -- and
+// without the payment actions whose casts dropsCast drops. dropped lists the
+// objects whose casts went (once per option or action). ok is false, and d
+// should be answered as before, when the rule drops nothing at d or d is no
+// priority decision.
+func (r *trickRule) keptPriority(e *rules.Engine, d *decision.Decision) (kept decision.Decision, back []int, dropped []state.ObjID, ok bool) {
+	g := r.gate(e, d)
+	if g.r == nil || d.Kind != decision.KPriority {
+		return decision.Decision{}, nil, nil, false
+	}
+	kept = *d
+	kept.Options = make([]decision.Option, 0, len(d.Options))
+	kept.PaymentActions = nil
+	for _, o := range d.Options {
+		if g.dropsOption(o) {
+			dropped = append(dropped, o.Obj)
+			continue
+		}
+		back = append(back, o.Index)
+		o.Index = len(kept.Options)
+		kept.Options = append(kept.Options, o)
+	}
+	for _, a := range d.PaymentActions {
+		if g.dropsCast(a.Cast.Object) {
+			dropped = append(dropped, a.Cast.Object)
+			continue
+		}
+		kept.PaymentActions = append(kept.PaymentActions, a)
+	}
+	return kept, back, dropped, len(dropped) > 0
 }
 
 // count records that the rule changed a decision (trickRule.changed).

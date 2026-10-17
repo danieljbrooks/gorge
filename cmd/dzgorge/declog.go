@@ -6,8 +6,9 @@ package main
 //   - "prio": a priority decision of either seat whose options include casting an instant-speed spell (an instant,
 //     or a card with flash) from its hand, or whose answer casts one. With the active player, step, stack, the
 //     seat's and its opponent's untapped lands, what it could cast at instant speed and what it chose; a searched
-//     decision carries its search record, and "rerooted" when that search was the bot-tap reroute (neither under
-//     -corpus, whose recorder replaces the declog's).
+//     decision carries its search record, and "rerooted" when that search had no bot candidate: the bot-tap
+//     reroute, or :tricks' reroute of a dropped bot cast (neither under -corpus, whose recorder replaces the
+//     declog's).
 //   - "target": a target decision of either seat: the stack object it targets for (the top of the stack, or the
 //     spell being cast) and the chosen targets, each an object (name, controller, zone) or a player.
 //   - "stack": each spell and ability on the stack, once, with its targets as first chosen, written when the game
@@ -77,10 +78,11 @@ type dlPrio struct {
 	// Rerooted), and each candidate lists indices into the search's priority vocabulary. Not under -corpus, whose
 	// recorder replaces the declog's, nor for an audited seat (the audit takes its records).
 	Search *auditSide `json:"search,omitempty"`
-	// Rerooted is true when that search was the az seat's bot-tap reroute (gorge 9afeacb2e): the seat's auto-pay
-	// bot answered a manual mana tap, so the payment vocabulary was searched with no bot candidate (the record's
-	// no_bot; candidate 0 is pass, not the bot's answer). Absent otherwise, always under :manualtaps, and whenever
-	// Search is (under -corpus or an audit).
+	// Rerooted is true when that search had no bot candidate (the record's no_bot; candidate 0 is pass, not the
+	// bot's answer): the az seat's bot-tap reroute (gorge 9afeacb2e), where its auto-pay bot answered a manual
+	// mana tap, or :tricks' reroute, where the bot's cast was one the rule drops; either way the payment
+	// vocabulary was searched with no bot candidate. Absent otherwise, and whenever Search is (under -corpus or
+	// an audit); never the bot-tap reroute under :manualtaps.
 	Rerooted bool `json:"rerooted,omitempty"`
 }
 

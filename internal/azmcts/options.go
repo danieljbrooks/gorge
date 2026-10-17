@@ -308,34 +308,41 @@ type Options struct {
 	// HoldUpkeep.
 	HoldUpkeepExempt string
 
-	// Tricks (DraftZero) casts combat tricks only where they do something
-	// and only on the right side (tricks.go), for draft-zero-report
-	// docs/038: of 122 combat tricks none was cast after attackers were
-	// declared, and 8 of 10 wrong-side spell targets were forced casts. A
-	// gated card's (TricksCards, by default DefaultTricks: FDN's pumps,
-	// protection spells and Fleeting Flight) cast is a candidate only with
-	// something on the stack, or from declare attackers through combat
-	// damage once a creature is attacking; a card that grants evasion
-	// (Fleeting Flight) also at its controller's own beginning of combat. A
-	// gated Charm with a mode that is no trick (Goblin Surprise's tokens) is
-	// cast freely and its trick modes are gated at its modes decision. Side
-	// checks: a gated card's cast is no candidate when no permanent of its
-	// caster's is a legal target (with no target of its own, when the caster
-	// controls no creature), and at its target decision the opponents'
-	// options are dropped when one of the caster's is offered; a
-	// counterspell (SP$ Counter with TargetType$ Spell, found by script) is
-	// no candidate unless an opponent's spell is a legal target, and at its
-	// target decision the caster's own spells are dropped when an opponent's
-	// is offered. The candidates are filtered before they are capped, at the
-	// root and at the searching seat's in-walk points, and at an opponent's
-	// (OpponentNodes) under OpponentMirror only; a bot answer the rule drops
-	// is outside the candidates and pass (a priority decision) or the first
-	// kept options (a target or modes decision) is played in its place.
-	// Stats.TricksGated and TricksSide count the roots it changed,
-	// TricksBot the replaced bot answers there, TricksWalk and TricksOpp the
-	// in-walk decisions. It composes with HoldUpkeep (each drops what it
-	// drops). Off (the default), every candidate list and every answer is as
-	// before.
+	// Tricks (DraftZero) casts combat tricks only where they do something and
+	// only on the right side (tricks.go), for draft-zero-report docs/038: of 122
+	// combat tricks none was cast after attackers were declared, and 8 of 10
+	// wrong-side spell targets were forced casts. A gated card's (TricksCards,
+	// by default DefaultTricks: FDN's pumps, protection spells and Fleeting
+	// Flight; a card matched by any face's name) cast is a candidate only with
+	// an object an opponent controls on the stack (the caster's own spells and
+	// abilities open nothing), or from declare attackers through combat damage
+	// once a creature is attacking; a card that grants evasion (Fleeting Flight)
+	// also at its controller's own beginning of combat. A gated Charm with a
+	// mode that is no trick (Goblin Surprise's tokens) is cast freely and its
+	// trick modes are gated at its modes decision. Side checks: a gated card's
+	// cast is no candidate when no permanent of its caster's is a legal target
+	// (with no target of its own, when the caster controls no creature), and at
+	// its target decision the opponents' options are dropped when one of the
+	// caster's is offered; a counterspell (SP$ Counter with TargetType$ Spell,
+	// found by script) is no candidate unless an opponent's spell is a legal
+	// target, and at its target decision the caster's own spells are dropped
+	// when an opponent's is offered. The candidates are filtered before they are
+	// capped, at the root and at the searching seat's in-walk points, and at an
+	// opponent's (OpponentNodes) under OpponentMirror only. A bot answer the
+	// rule drops is outside the candidates, never searched. In its place: at a
+	// priority root under AutoPayment (priority searched) outside HoldUpkeep's
+	// window, a search of what the rule leaves with no bot candidate (as under
+	// Root.NoBot; pass, the one candidate left, is played when fewer than two
+	// are); at a priority decision in the walk outside that window, the walk bot
+	// asked again over what the rule keeps; anywhere else pass (a priority
+	// decision) or the first kept options (a target or modes decision).
+	// Stats.TricksGated and TricksSide count the roots it changed, TricksBot the
+	// replaced bot answers there, TricksWalk and TricksOpp the in-walk
+	// decisions. It composes with HoldUpkeep (each drops what it drops). It
+	// binds Search only: the seat's DecideBoard and DecideRootRefused fallbacks,
+	// a seat with Sims <= 0 and an unmirrored opponent's walk bot play the bot's
+	// answer unruled. Off (the default), every candidate list and every answer
+	// is as before.
 	Tricks bool
 	// TricksCards replaces DefaultTricks: card names separated by '|' (a
 	// card matches when any face's name is listed; each name trimmed of
@@ -548,11 +555,13 @@ type Stats struct {
 	// dropped a candidate, TricksSide those at which a side check did (a
 	// cast, or a target option), each 0 or 1 per Search, searched or then
 	// skipped alike. TricksBot counts the roots whose bot answer the rule
-	// dropped, so pass or the first kept options were played in its place
-	// (0 or 1 per Search). TricksWalk and TricksOpp count the searching
-	// seat's and a mirrored opponent's in-walk decisions the rule changed (a
-	// dropped candidate or a replaced walk-bot answer), walk work like
-	// HeldUpkeepWalk. All stay 0 with the option off.
+	// dropped and replaced (0 or 1 per Search): rerooted, searched over what
+	// the rule left with no bot candidate (Result.NoBot), or played as pass
+	// (the one candidate left, or no reroute) or the first kept options.
+	// TricksWalk and TricksOpp count the searching seat's and a mirrored
+	// opponent's in-walk decisions the rule changed (a dropped candidate or
+	// a replaced walk-bot answer), walk work like HeldUpkeepWalk. All stay 0
+	// with the option off.
 	TricksGated int
 	TricksSide  int
 	TricksBot   int

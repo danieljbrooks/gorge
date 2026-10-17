@@ -105,8 +105,9 @@ type azAgg struct {
 	// searching seat's and a mirrored opponent's (HeldUpkeepWalk, HeldUpkeepOpp).
 	heldUpkeep, heldUpkeepBot, heldUpkeepWalk, heldUpkeepOpp atomic.Int64
 	// :tricks: root decisions at which its timing gate, or a side check, dropped a candidate (azmcts
-	// Stats.TricksGated, TricksSide), roots whose bot answer it dropped and replaced (TricksBot), and the in-walk
-	// decisions it changed, the searching seat's and a mirrored opponent's (TricksWalk, TricksOpp).
+	// Stats.TricksGated, TricksSide), roots whose bot answer it dropped and replaced -- rerooted, or played as
+	// pass or the first kept options (TricksBot) -- and the in-walk decisions it changed, the searching seat's
+	// and a mirrored opponent's (TricksWalk, TricksOpp).
 	tricksGated, tricksSide, tricksBot, tricksWalk, tricksOpp atomic.Int64
 }
 
@@ -674,11 +675,13 @@ func runPlay(args []string) int {
 		// :tricks: root decisions at which the timing gate dropped a gated card's cast or mode
 		// (azmcts Stats.TricksGated) and at which a side check dropped a cast or a target (TricksSide),
 		// searched over what was left or played as the bot's answer; the roots whose bot answer the rule
-		// dropped, played as pass or the first kept options (TricksBot); and the in-walk decisions it
-		// changed, the searching seat's and a mirrored opponent's (TricksWalk, TricksOpp; walk work).
+		// dropped and replaced (TricksBot): a priority root with :autopay outside :holdupkeep's window
+		// searched over what was left with no bot candidate (pass played when it is all that is left),
+		// else pass or the first kept targets or modes; and the in-walk decisions it changed, the
+		// searching seat's and a mirrored opponent's (TricksWalk, TricksOpp; walk work).
 		sum["az_tricks_gated_roots"] = azStats.tricksGated.Load()
 		sum["az_tricks_side_roots"] = azStats.tricksSide.Load()
-		sum["az_tricks_bot_passes"] = azStats.tricksBot.Load()
+		sum["az_tricks_bot_replaced"] = azStats.tricksBot.Load()
 		sum["az_tricks_walk"] = azStats.tricksWalk.Load()
 		sum["az_tricks_opp"] = azStats.tricksOpp.Load()
 	}
