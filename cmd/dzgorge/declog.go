@@ -6,7 +6,8 @@ package main
 //   - "prio": a priority decision of either seat whose options include casting an instant-speed spell (an instant,
 //     or a card with flash) from its hand, or whose answer casts one. With the active player, step, stack, the
 //     seat's and its opponent's untapped lands, what it could cast at instant speed and what it chose; a searched
-//     decision carries its search record, and "rerooted" when that search was the bot-tap reroute.
+//     decision carries its search record, and "rerooted" when that search was the bot-tap reroute (neither under
+//     -corpus, whose recorder replaces the declog's).
 //   - "target": a target decision of either seat: the stack object it targets for (the top of the stack, or the
 //     spell being cast) and the chosen targets, each an object (name, controller, zone) or a player.
 //   - "stack": each spell and ability on the stack, once, with its targets as first chosen, written when the game
@@ -72,12 +73,14 @@ type dlPrio struct {
 	Choice   string   `json:"choice"`   // the chosen option's kind (pass, cast, play_land, activate, ...), or payment
 	Cast     *dlObj   `json:"cast,omitempty"`
 	Options  []string `json:"options"` // every option's kind:label
-	// Search is the seat's search record for this decision, when it searched (cands index its priority vocabulary:
-	// [0] is pass, then the payment casts in engine order).
+	// Search is the seat's search record for this decision, when it searched: candidate 0 is the bot's answer (unless
+	// Rerooted), and each candidate lists indices into the search's priority vocabulary. Not under -corpus, whose
+	// recorder replaces the declog's, nor for an audited seat (the audit takes its records).
 	Search *auditSide `json:"search,omitempty"`
 	// Rerooted is true when that search was the az seat's bot-tap reroute (gorge 9afeacb2e): the seat's auto-pay
 	// bot answered a manual mana tap, so the payment vocabulary was searched with no bot candidate (the record's
-	// no_bot; candidate 0 is pass, not the bot's answer). Absent otherwise, and always under :manualtaps.
+	// no_bot; candidate 0 is pass, not the bot's answer). Absent otherwise, always under :manualtaps, and whenever
+	// Search is (under -corpus or an audit).
 	Rerooted bool `json:"rerooted,omitempty"`
 }
 
@@ -482,11 +485,18 @@ func (l *decLog) priority(e *rules.Engine, seat int, d *decision.Decision, in de
 	for _, o := range d.Options {
 		r.Options = append(r.Options, o.Kind+":"+strings.TrimSpace(o.Label))
 	}
-	if sr := l.last[seat]; sr != nil && sr.Sequence == d.Seq {
-		t := trimRecord(sr)
-		r.Search, r.Rerooted = &t, sr.NoBot
-	}
+	attachSearch(&r, l.last[seat], d.Seq)
 	declogW.write(r)
+}
+
+// attachSearch puts the seat's search record on prio line r when it is this decision's (sequence seq), with the
+// reroute mark from the record.
+func attachSearch(r *dlPrio, sr *policynet.VisitRecord, seq uint64) {
+	if sr == nil || sr.Sequence != seq {
+		return
+	}
+	t := trimRecord(sr)
+	r.Search, r.Rerooted = &t, sr.NoBot
 }
 
 // finish writes the game's stack objects.
