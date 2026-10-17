@@ -82,6 +82,8 @@ type dlTargetLine struct {
 	For     *dlObj     `json:"for,omitempty"` // the top of the stack
 	Chosen  []dlTarget `json:"chosen"`
 	Options int        `json:"options"`
+	// Offered is every option the decision offered: an object (name, controller, zone, combat) or a player.
+	Offered []dlTarget `json:"offered"`
 }
 
 type dlStackLine struct {
@@ -384,6 +386,14 @@ func (l *decLog) observe(e *rules.Engine, seat int, d *decision.Decision, in dec
 		t := dlTargetLine{dlHead: l.head("target", e, seat, d), Prompt: d.Prompt, Options: len(d.Options)}
 		if n := len(e.G.Stack); n > 0 {
 			t.For = l.obj(e, e.G.Stack[n-1])
+		}
+		for _, o := range d.Options {
+			if o.Obj != 0 {
+				t.Offered = append(t.Offered, dlTarget{Obj: l.obj(e, o.Obj)})
+			} else {
+				p := int(o.Player)
+				t.Offered = append(t.Offered, dlTarget{Player: &p})
+			}
 		}
 		for _, c := range in.Choices {
 			for _, o := range d.Options {
