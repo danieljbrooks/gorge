@@ -107,13 +107,17 @@ import (
 //	                             rerooted), pass played when it is all that is left; pass in :holdupkeep's
 //	                             own upkeep and draw window and without :autopay. Inside a
 //	                             simulation the bot is asked again over what the rule keeps; a dropped
-//	                             target or mode is replaced by the first kept ones. Composes with
+//	                             target or mode is replaced by the first kept ones. A root's bot answer
+//	                             that taps mana by hand where the rule drops a cast is asked of the bot
+//	                             again over what the rule keeps (the dropped cards uncastable to it), pass
+//	                             played when it still taps with nothing left to cast. Composes with
 //	                             :holdupkeep. Not applied where the seat does not search: its fallbacks
 //	                             when the observation feed stops or a root is refused, sims=0, and an
 //	                             opponent without :oppfull inside simulations. play's summary counts the
 //	                             roots changed as az_tricks_gated_roots and az_tricks_side_roots, the bot
-//	                             answers replaced as az_tricks_bot_replaced, and the decisions changed
-//	                             inside simulations as az_tricks_walk and az_tricks_opp. An az and prior key
+//	                             answers replaced as az_tricks_bot_replaced, the bot taps replaced as
+//	                             az_tricks_tap_replaced, and the decisions changed inside simulations as
+//	                             az_tricks_walk and az_tricks_opp. An az and prior key
 //	                             (azmcts Options.Tricks, TricksCards)
 //	   :topk=K                   the network chooses the candidates: every searched decision (the root
 //	                             and every one inside a simulation) is enumerated in full and the bot's

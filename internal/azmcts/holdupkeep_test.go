@@ -713,7 +713,7 @@ func TestHoldUpkeepPassesForAHeldBotCast(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := az.decidePrior(context.Background(), searchseat.Env{Engine: e}, *d, cast)
+		got, err := az.decidePrior(context.Background(), searchseat.Env{Engine: e}, *d, cast, false)
 		if err != nil {
 			t.Fatal(err)
 		}

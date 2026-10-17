@@ -335,14 +335,19 @@ type Options struct {
 	// Root.NoBot; pass, the one candidate left, is played when fewer than two
 	// are); at a priority decision in the walk outside that window, the walk bot
 	// asked again over what the rule keeps; anywhere else pass (a priority
-	// decision) or the first kept options (a target or modes decision).
+	// decision) or the first kept options (a target or modes decision). A
+	// seat's bot answer that taps mana by hand where the rule drops a cast is
+	// asked of the bot again over what the rule keeps, the dropped cards
+	// uncastable to it, and pass is played when that fails or the answer is
+	// still a tap with nothing left to cast (Seat.DecideSearch,
+	// trickRule.tapAnswer); the walk's own taps are played as answered.
 	// Stats.TricksGated and TricksSide count the roots it changed, TricksBot the
-	// replaced bot answers there, TricksWalk and TricksOpp the in-walk
-	// decisions. It composes with HoldUpkeep (each drops what it drops). It
-	// binds Search only: the seat's DecideBoard and DecideRootRefused fallbacks,
-	// a seat with Sims <= 0 and an unmirrored opponent's walk bot play the bot's
-	// answer unruled. Off (the default), every candidate list and every answer
-	// is as before.
+	// replaced bot answers there, TricksTap the replaced taps, TricksWalk and
+	// TricksOpp the in-walk decisions. It composes with HoldUpkeep (each drops
+	// what it drops). It binds Search and the seat's search path only: the
+	// seat's DecideBoard and DecideRootRefused fallbacks, a seat with Sims <= 0
+	// and an unmirrored opponent's walk bot play the bot's answer unruled. Off
+	// (the default), every candidate list and every answer is as before.
 	Tricks bool
 	// TricksCards replaces DefaultTricks: card names separated by '|' (a
 	// card matches when any face's name is listed; each name trimmed of
@@ -560,13 +565,17 @@ type Stats struct {
 	// (the one candidate left, or no reroute) or the first kept options.
 	// TricksWalk and TricksOpp count the searching seat's and a mirrored
 	// opponent's in-walk decisions the rule changed (a dropped candidate or
-	// a replaced walk-bot answer), walk work like HeldUpkeepWalk. All stay 0
-	// with the option off.
+	// a replaced walk-bot answer), walk work like HeldUpkeepWalk. TricksTap
+	// counts the seat's roots (0 or 1 per decision, set by the seat, not
+	// Search) whose bot answer, a mana tap at a decision where the rule drops
+	// a cast, it replaced: the bot asked again answered otherwise, or pass was
+	// played (trickRule.tapAnswer). All stay 0 with the option off.
 	TricksGated int
 	TricksSide  int
 	TricksBot   int
 	TricksWalk  int
 	TricksOpp   int
+	TricksTap   int
 }
 
 // The searched kinds, indexing Stats' per-kind breakdowns.
@@ -717,6 +726,7 @@ func (s *Stats) Add(o Stats) {
 	s.TricksBot += o.TricksBot
 	s.TricksWalk += o.TricksWalk
 	s.TricksOpp += o.TricksOpp
+	s.TricksTap += o.TricksTap
 	for x := range s.ExtraSearched {
 		s.ExtraSearched[x] += o.ExtraSearched[x]
 		s.ExtraPoints[x] += o.ExtraPoints[x]

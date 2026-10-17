@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/adams-shaun/gorge/botpolicy"
 	"github.com/adams-shaun/gorge/decision"
@@ -288,13 +289,17 @@ func (s *Seat) DecideSearch(ctx context.Context, env searchseat.Env, d decision.
 		return decision.Intent{}, err
 	}
 	if s.cfg.PriorOnly && env.Engine != nil {
-		return s.decidePrior(ctx, env, d, botIn)
+		in, tapped := s.trickTap(ctx, env.Engine, &d, botIn)
+		return s.decidePrior(ctx, env, d, in, tapped)
 	}
 	if s.cfg.Search.Sims <= 0 || env.Engine == nil {
 		// No Search: the wrapped bot's answer, Options.HoldUpkeep and
 		// Options.Tricks unapplied.
 		return botIn, nil
 	}
+	// Options.Tricks: a mana tap where the rule drops a cast is asked of the
+	// bot again (trickTap), before the tap backstop below reads the answer.
+	botIn, tapped := s.trickTap(ctx, env.Engine, &d, botIn)
 	var t0 float64
 	if Millis != nil {
 		t0 = Millis()
@@ -330,7 +335,8 @@ func (s *Seat) DecideSearch(ctx context.Context, env searchseat.Env, d decision.
 	// decision (SkipFewCandidates) and play the tap unsearched -- the
 	// counterspell windows az never learned. Search the full vocabulary with
 	// no bot candidate instead (Root.NoBot); every failure path still plays
-	// the bot's tap. Stats.BotTapRerooted counts it.
+	// the bot's tap (under Options.Tricks, the answer trickTap left).
+	// Stats.BotTapRerooted counts it.
 	// SeatConfig.ManualTaps (DraftZero) turns the backstop off: the seat as before 9afeacb2e.
 	// The bot's land drop comes first (DraftZero, Root.BotAsk): its tap gate
 	// runs before its land drop, and the vocabulary has no land play, so
@@ -344,6 +350,9 @@ func (s *Seat) DecideSearch(ctx context.Context, env searchseat.Env, d decision.
 	res, err := Search(ctx, root, src, s.net, opts)
 	if tapReroot && res.Stats.Searched == 1 {
 		res.Stats.BotTapRerooted = 1
+	}
+	if tapped {
+		res.Stats.TricksTap = 1
 	}
 	if redeal != nil {
 		s.spare = redeal.reclaim()
@@ -421,8 +430,10 @@ func (s *Seat) DigestFree() bool { return true }
 // Options.HoldUpkeep, pass in place of a held cast; under Options.Tricks,
 // Search's answer in place of a dropped one). Candidate 0 is the bot's
 // answer unless the root has no bot candidate (Result.NoBot: Options.Tricks
-// rerooted a dropped bot cast), where it is played as itself.
-func (s *Seat) decidePrior(ctx context.Context, env searchseat.Env, d decision.Decision, botIn decision.Intent) (decision.Intent, error) {
+// rerooted a dropped bot cast), where it is played as itself. botIn is the
+// answer trickTap leaves, tapped whether it replaced the bot's tap
+// (Stats.TricksTap).
+func (s *Seat) decidePrior(ctx context.Context, env searchseat.Env, d decision.Decision, botIn decision.Intent, tapped bool) (decision.Intent, error) {
 	obs := searchprobe.NewCollector(d.Player)
 	opts := s.cfg.Search
 	opts.Sims, opts.Noise, opts.Sample = 0, false, false
@@ -430,6 +441,9 @@ func (s *Seat) decidePrior(ctx context.Context, env searchseat.Env, d decision.D
 	res, err := Search(ctx, Root{Engine: env.Engine, Decision: &d, Bot: botIn, Observer: obs}, nil, s.net, opts)
 	if err != nil {
 		return decision.Intent{}, err
+	}
+	if tapped {
+		res.Stats.TricksTap = 1
 	}
 	if len(res.Candidates) < 2 {
 		// Search's answer: the bot's, or under Options.HoldUpkeep pass in
@@ -449,6 +463,24 @@ func (s *Seat) decidePrior(ctx context.Context, env searchseat.Env, d decision.D
 		return botIn, nil
 	}
 	return res.Candidates[best], nil
+}
+
+// trickTap is Options.Tricks at the seat's own root d of engine e, its bot's
+// answer in: where in is a mana activation and the rule drops a cast at d,
+// the seat's wrapped bot is asked again over what the rule keeps, or pass is
+// played (trickRule.tapAnswer, which says when). tapped reports that the
+// answer changed. Anywhere else, and with the option off, in stands.
+func (s *Seat) trickTap(ctx context.Context, e *rules.Engine, d *decision.Decision, in decision.Intent) (decision.Intent, bool) {
+	if !s.cfg.Search.Tricks {
+		return in, false
+	}
+	out, ok := newTrickRule(s.cfg.Search.TricksCards).tapAnswer(e, d, in, func(b botpolicy.Board, kept decision.Decision) (decision.Intent, error) {
+		return s.def.DecideBoard(ctx, b, kept)
+	})
+	if !ok || out.Payment == nil && in.Payment == nil && slices.Equal(out.Choices, in.Choices) {
+		return in, false
+	}
+	return out, true
 }
 
 // redealSource builds the honest source at one of the seat's decisions from

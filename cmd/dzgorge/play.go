@@ -106,9 +106,9 @@ type azAgg struct {
 	heldUpkeep, heldUpkeepBot, heldUpkeepWalk, heldUpkeepOpp atomic.Int64
 	// :tricks: root decisions at which its timing gate, or a side check, dropped a candidate (azmcts
 	// Stats.TricksGated, TricksSide), roots whose bot answer it dropped and replaced -- rerooted, or played as
-	// pass or the first kept options (TricksBot) -- and the in-walk decisions it changed, the searching seat's
-	// and a mirrored opponent's (TricksWalk, TricksOpp).
-	tricksGated, tricksSide, tricksBot, tricksWalk, tricksOpp atomic.Int64
+	// pass or the first kept options (TricksBot) -- and whose bot mana tap it replaced (TricksTap), and the
+	// in-walk decisions it changed, the searching seat's and a mirrored opponent's (TricksWalk, TricksOpp).
+	tricksGated, tricksSide, tricksBot, tricksTap, tricksWalk, tricksOpp atomic.Int64
 }
 
 var azStats azAgg
@@ -135,6 +135,7 @@ func (a *azAgg) watch(d azmcts.Diag) {
 	a.tricksGated.Add(int64(d.Stats.TricksGated))
 	a.tricksSide.Add(int64(d.Stats.TricksSide))
 	a.tricksBot.Add(int64(d.Stats.TricksBot))
+	a.tricksTap.Add(int64(d.Stats.TricksTap))
 	a.tricksWalk.Add(int64(d.Stats.TricksWalk))
 	a.tricksOpp.Add(int64(d.Stats.TricksOpp))
 	a.topKPoints.Add(int64(d.Stats.PriorTopKPoints))
@@ -677,11 +678,14 @@ func runPlay(args []string) int {
 		// searched over what was left or played as the bot's answer; the roots whose bot answer the rule
 		// dropped and replaced (TricksBot): a priority root with :autopay outside :holdupkeep's window
 		// searched over what was left with no bot candidate (pass played when it is all that is left),
-		// else pass or the first kept targets or modes; and the in-walk decisions it changed, the
-		// searching seat's and a mirrored opponent's (TricksWalk, TricksOpp; walk work).
+		// else pass or the first kept targets or modes; the roots whose bot answer, a mana tap where the
+		// rule drops a cast, it replaced by the bot's answer asked again or by pass (TricksTap); and the
+		// in-walk decisions it changed, the searching seat's and a mirrored opponent's (TricksWalk,
+		// TricksOpp; walk work).
 		sum["az_tricks_gated_roots"] = azStats.tricksGated.Load()
 		sum["az_tricks_side_roots"] = azStats.tricksSide.Load()
 		sum["az_tricks_bot_replaced"] = azStats.tricksBot.Load()
+		sum["az_tricks_tap_replaced"] = azStats.tricksTap.Load()
 		sum["az_tricks_walk"] = azStats.tricksWalk.Load()
 		sum["az_tricks_opp"] = azStats.tricksOpp.Load()
 	}

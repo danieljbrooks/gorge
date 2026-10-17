@@ -594,10 +594,12 @@ func (e *engineEnv) advance() (*Point, error) {
 // hold's window (holdUpkeep.on: there only instants are castable and pass
 // costs nothing) the seat's walk bot -- the one that answered pd, asked the
 // same way -- is asked again over what the rule keeps (keptPriority), on a
-// board refilled with the dropped cards marked uncastable, so it neither
-// casts nor taps mana for them; its answer is mapped back onto pd. Anywhere
-// else alt: a target or modes bot is not asked again. It records nothing
-// (the caller counts).
+// board refilled with the dropped cards marked uncastable (uncastable), so it
+// neither casts nor taps mana for them; its answer is mapped back onto pd
+// (mapBack; alt when it picks an index the kept decision does not have).
+// Anywhere else alt: a target or modes bot is not asked again. It records
+// nothing (the caller counts). The seat's root has its twin for a bot's mana
+// tap (trickRule.tapAnswer); the walk's own taps are played as answered.
 func (e *engineEnv) reask(pd *decision.Decision, tricks *trickRule, hold *holdUpkeep, alt decision.Intent) decision.Intent {
 	if hold.on(e.e, pd) {
 		return alt
@@ -609,11 +611,7 @@ func (e *engineEnv) reask(pd *decision.Decision, tricks *trickRule, hold *holdUp
 	// The board's tables are e.board's, refilled before the next bot
 	// answer, so the marks die with this one.
 	b := botpolicy.BoardFromGameInto(e.e.G, e.e, pd.Player, e.board)
-	for _, id := range dropped {
-		if c := b.Cards.Ref(id); c != nil {
-			c.Castable = false
-		}
-	}
+	uncastable(b, dropped)
 	var in decision.Intent
 	if pd.Player == e.cfg.actor && e.actorBot != nil {
 		in, _ = e.actorBot.DecideBoard(context.Background(), b, kept)
@@ -622,15 +620,8 @@ func (e *engineEnv) reask(pd *decision.Decision, tricks *trickRule, hold *holdUp
 	} else {
 		in = botpolicy.Decide(b, &kept, e.rngs[pd.Player])
 	}
-	if len(in.Choices) > 0 {
-		choices := make([]int, len(in.Choices))
-		for i, c := range in.Choices {
-			if c < 0 || c >= len(back) {
-				return alt
-			}
-			choices[i] = back[c]
-		}
-		in.Choices = choices
+	if in, ok = mapBack(in, back); !ok {
+		return alt
 	}
 	return in
 }

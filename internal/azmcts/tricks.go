@@ -3,6 +3,7 @@ package azmcts
 import (
 	"strings"
 
+	"github.com/adams-shaun/gorge/botpolicy"
 	"github.com/adams-shaun/gorge/cards"
 	"github.com/adams-shaun/gorge/decision"
 	"github.com/adams-shaun/gorge/effects"
@@ -66,6 +67,13 @@ const DefaultTricks = "Giant Growth|Sure Strike|Bulk Up|Claws Out|Goblin Surpris
 //     AutoPayment or not searched, or inside HoldUpkeep's window) and the
 //     first set of kept options at a target or modes decision (firstKept;
 //     the bot is not asked again there).
+//
+// A seat's bot answer that taps mana by hand is no cast the rule drops, but
+// it may be aimed at one: at a priority root where the rule drops a cast the
+// seat asks its bot again over what the rule keeps, the dropped cards
+// uncastable to it, and plays pass when that fails or the answer still taps
+// with nothing left to cast (tapAnswer, Seat.DecideSearch). The walk's own
+// taps are played as answered.
 //
 // Search hangs the rule on its Kinds (Kinds.tricks) as it does
 // HoldUpkeep's; an opponent's in-walk points use it only under
@@ -639,6 +647,98 @@ func (r *trickRule) keptPriority(e *rules.Engine, d *decision.Decision) (kept de
 		kept.PaymentActions = append(kept.PaymentActions, a)
 	}
 	return kept, back, dropped, len(dropped) > 0
+}
+
+// uncastable marks the cards ids uncastable on board b (Card.Castable), so a
+// bot asked over b neither casts them nor taps mana toward them (the tap
+// gate prices castable cards only). b's tables are the caller's, refilled
+// before its next bot answer, so the marks die with that answer.
+func uncastable(b botpolicy.Board, ids []state.ObjID) {
+	for _, id := range ids {
+		if c := b.Cards.Ref(id); c != nil {
+			c.Castable = false
+		}
+	}
+}
+
+// mapBack is answer in, given over keptPriority's decision, mapped back onto
+// the decision's own option indices (back); ok is false when it picks an
+// index the kept decision does not have. A payment answer names one of the
+// decision's own payment actions already (the kept ones keep their IDs).
+func mapBack(in decision.Intent, back []int) (decision.Intent, bool) {
+	if len(in.Choices) == 0 {
+		return in, true
+	}
+	choices := make([]int, len(in.Choices))
+	for i, c := range in.Choices {
+		if c < 0 || c >= len(back) {
+			return in, false
+		}
+		choices[i] = back[c]
+	}
+	in.Choices = choices
+	return in, true
+}
+
+// castLeft reports whether kept, keptPriority's decision at priority decision
+// d of engine e, may still let the seat cast a spell its mana could pay: a
+// payment action (planned or not) or a "cast" option that casts a spell (not
+// a special action) is kept, or d's payment census may be incomplete. Built
+// from an empty pool, d's payment actions are every spell the seat can cast
+// now, legal targets included; with mana floating the builder may decline
+// to build them, and an unbuilt list (a seat that builds no plans) has none,
+// so either answers true.
+func castLeft(e *rules.Engine, d *decision.Decision, kept *decision.Decision) bool {
+	if !d.PaymentActionsBuilt || len(kept.PaymentActions) > 0 || e.G.Players[d.Player].Pool.Total() > 0 {
+		return true
+	}
+	for _, o := range kept.Options {
+		if o.Kind == "cast" && !specialCast(o.Mode) {
+			return true
+		}
+	}
+	return false
+}
+
+// tapAnswer is the rule at a priority root d of engine e whose bot answered
+// in, a mana activation (priorityBase BaseActivate: the auto-pay bot's
+// manual tap gate, which taps only in a main phase, so never inside
+// HoldUpkeep's window): where the rule drops a cast at d (keptPriority), the
+// tap may be aimed at that cast, which is never played, so its mana would go
+// to nothing and the seat's lands would be tapped through its windows. The
+// bot the tap came from (ask) is asked again, as the walk asks its walk bot
+// (engineEnv.reask): over the decision the rule keeps, on a board built from
+// e with the dropped cards uncastable, its answer mapped back onto d. Pass is
+// played in its place when that fails (ask's error, an index the kept
+// decision does not have), or when the answer is still a mana activation and
+// no cast is left (castLeft): its mana could then pay only a cast the rule
+// drops, or none (the tap gate also taps toward a card the engine offers no
+// cast of, one with no legal target). ok is false, and in stands, when in is
+// no mana activation, d no priority decision, the rule drops nothing at d, or
+// d offers no pass. The answer may be in itself (a tap aimed at a kept
+// spell), and it records nothing.
+func (r *trickRule) tapAnswer(e *rules.Engine, d *decision.Decision, in decision.Intent,
+	ask func(botpolicy.Board, decision.Decision) (decision.Intent, error)) (decision.Intent, bool) {
+	if r == nil || e == nil || d == nil || d.Kind != decision.KPriority || priorityBase(d, in) != BaseActivate {
+		return in, false
+	}
+	kept, back, dropped, ok := r.keptPriority(e, d)
+	if !ok {
+		return in, false
+	}
+	b := botpolicy.BoardFromGame(e.G, e, d.Player)
+	uncastable(b, dropped)
+	again, err := ask(b, kept)
+	if err == nil {
+		again, ok = mapBack(again, back)
+	}
+	if err != nil || !ok || priorityBase(d, again) == BaseActivate && !castLeft(e, d, &kept) {
+		if pass, ok := passAnswer(d); ok {
+			return pass, true
+		}
+		return in, false
+	}
+	return again, true
 }
 
 // count records that the rule changed a decision (trickRule.changed).

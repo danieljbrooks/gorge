@@ -2,6 +2,7 @@ package azmcts
 
 import (
 	"context"
+	"fmt"
 	"math/rand/v2"
 	"reflect"
 	"strings"
@@ -95,8 +96,15 @@ func trickName(name string) bool {
 func playTricks(t *testing.T, bearFrom int32, visit func(e *rules.Engine, d *decision.Decision) bool) {
 	t.Helper()
 	deck := trickDeck(t)
+	playTricksDecks(t, [2][]*cards.Card{deck, deck}, bearFrom, visit)
+}
+
+// playTricksDecks is playTricks with seat 0 and seat 1 playing decks[0] and
+// decks[1].
+func playTricksDecks(t *testing.T, decks [2][]*cards.Card, bearFrom int32, visit func(e *rules.Engine, d *decision.Decision) bool) {
+	t.Helper()
 	for seed := uint64(1); seed < 80; seed++ {
-		e := rules.New(rules.Config{Seed: seed, Names: []string{"a", "b"}, Decks: [][]*cards.Card{deck, deck}})
+		e := rules.New(rules.Config{Seed: seed, Names: []string{"a", "b"}, Decks: [][]*cards.Card{decks[0], decks[1]}})
 		e.Advance()
 		rngs := searchprobe.BotRandoms(seed, 2)
 		cast := [2]int32{-1, -1}
@@ -645,16 +653,31 @@ func TestTricksAtTheSearchRoot(t *testing.T) {
 	// the own main phase and upkeep (no HoldUpkeep) the root is rerooted:
 	// the unruled vocabulary minus the gated casts, with no bot candidate
 	// (Pass first), so Goblin Surprise, cast freely, is searched too. In
-	// the opponent's upkeep pass alone is left, and it is played.
-	for _, w := range []int{twMain, twUpkeep, twBotCast} {
+	// the opponent's upkeep pass alone is left, and it is played. With
+	// HoldUpkeep on (tricks:holdupkeep, the shipped combination) the own main
+	// phase and the opponent's upkeep are outside its window, and the same
+	// holds: HoldUpkeep changes nothing there.
+	for _, tc := range []struct {
+		w    int
+		hold bool
+	}{{twMain, false}, {twUpkeep, false}, {twBotCast, false}, {twMain, true}, {twBotCast, true}} {
+		w := tc.w
 		e := ws[w]
 		d := e.Pending()
 		name := trickWindowNames[w] + ", a bot cast"
+		var mods []func(*Options)
+		if tc.hold {
+			name += ", HoldUpkeep on"
+			mods = append(mods, func(o *Options) { o.HoldUpkeep = true })
+		}
 		bot := payCastOf(t, e, d, nGiantGrowth)
-		off := trickSearch(t, e, bot, false, "", nil)
-		on := trickSearch(t, e, bot, true, "", nil)
+		off := trickSearch(t, e, bot, false, "", nil, mods...)
+		on := trickSearch(t, e, bot, true, "", nil, mods...)
 		if off.Stats.Searched != 1 || castName(e, d, off.Candidates[0]) != nGiantGrowth {
 			t.Fatalf("%s, off: searched %d, candidates %v", name, off.Stats.Searched, off.Labels)
+		}
+		if on.Stats.HeldUpkeep+on.Stats.HeldUpkeepBot+off.Stats.HeldUpkeep+off.Stats.HeldUpkeepBot != 0 {
+			t.Fatalf("%s: HoldUpkeep changed the root (held %d %d, held bot %d %d)", name, off.Stats.HeldUpkeep, on.Stats.HeldUpkeep, off.Stats.HeldUpkeepBot, on.Stats.HeldUpkeepBot)
 		}
 		all, _, _, _, _ := enumerateCut(searchprobe.NewCollector(d.Player), e.Clone(), d, passOf(t, d), AllKinds(), BenchCandidateLimit, true)
 		var rest []cand
@@ -832,6 +855,126 @@ func TestTricksAtTheSearchRoot(t *testing.T) {
 	bad.TricksCards = "Giant Growth"
 	if err := bad.Validate(nil); err == nil {
 		t.Fatal("a tricks list without Tricks validated")
+	}
+}
+
+// The reroot is for a dropped bot answer only: under Tricks a main-phase
+// root whose bot plays a land drops nothing, so it is not rerooted -- the
+// land play is outside the payment vocabulary and played, unsearched
+// (Result.NoBot false, TricksBot 0), with HoldUpkeep too -- though a full
+// root there (Root.NoBot) would search what the rule leaves and lose it.
+func TestTricksLandPlayRootNotRerooted(t *testing.T) {
+	e := trickPosition(t, "seat 0 plays a land in its own first main phase, an ungated spell castable", 0, func(e *rules.Engine, d *decision.Decision, bot decision.Intent) bool {
+		c := castableNames(e, d)
+		return e.G.Active == 0 && e.G.Step == state.StepMain1 && len(e.G.Stack) == 0 && priorityBase(d, bot) == BasePlayLand &&
+			(c[nBear] || c[nDuelist] || c[nGoblinSurp]) && (c[nGiantGrowth] || c[nFlight] || c[nFakeDeath])
+	})
+	d := e.Pending()
+	land := autoPayBot(t, e, d)
+	for _, hold := range []bool{false, true} {
+		mods := []func(*Options){func(o *Options) { o.HoldUpkeep = hold }}
+		on := trickSearch(t, e, land, true, "", nil, mods...)
+		if on.Stats.Searched != 0 || on.Stats.Skipped != 1 || on.NoBot || on.Stats.TricksBot != 0 || on.Stats.TricksGated != 1 || !reflect.DeepEqual(on.Intent, land) {
+			t.Fatalf("own main, a land play, hold %v: searched %d skipped %d no bot %v, tricks bot %d gated %d, played %s; want the land play, unsearched",
+				hold, on.Stats.Searched, on.Stats.Skipped, on.NoBot, on.Stats.TricksBot, on.Stats.TricksGated, CandidateLabel(d, on.Intent))
+		}
+		full := trickSearch(t, e, land, true, "", func(r *Root) { r.NoBot = true }, mods...)
+		if full.Stats.Searched != 1 || !full.NoBot || reflect.DeepEqual(full.Intent, land) {
+			t.Fatalf("own main, a land play, hold %v, full root: searched %d no bot %v, played %s", hold, full.Stats.Searched, full.NoBot, CandidateLabel(d, full.Intent))
+		}
+	}
+}
+
+// Every failure path of a rerooted root plays pass, never the dropped bot
+// cast: every simulation failed (no world, Stats.AllFailed), and the
+// wall-clock bail-out (a context already done, Stats.DeadlineHits).
+func TestTricksRerootFailurePlaysPass(t *testing.T) {
+	e := trickWindows(t)[twMain]
+	for _, tc := range []struct {
+		name string
+		ctx  func() context.Context
+		src  func(c *rules.Engine, obs *searchprobe.Collector) WorldSource
+	}{
+		{"every simulation failed", context.Background, func(*rules.Engine, *searchprobe.Collector) WorldSource {
+			return fixedSource{err: fmt.Errorf("%w: test", ErrNoWorld)}
+		}},
+		{"the deadline", func() context.Context {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return ctx
+		}, func(c *rules.Engine, obs *searchprobe.Collector) WorldSource {
+			src, _ := newTestClairvoyant(c, obs)
+			return src
+		}},
+	} {
+		c := e.Clone()
+		d := c.Pending()
+		bot := payCastOf(t, c, d, nGiantGrowth)
+		obs := searchprobe.NewCollector(d.Player)
+		opts := DefaultOptions()
+		opts.Sims, opts.AutoPayment, opts.Tricks = 4, true, true
+		res, err := Search(tc.ctx(), Root{Engine: c, Decision: d, Bot: bot, Observer: obs}, tc.src(c, obs), nil, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		failed := res.Stats.AllFailed == 1 || res.Stats.DeadlineHits > 0
+		if res.Stats.Searched != 1 || !res.NoBot || !failed || res.Stats.TricksBot != 1 || !reflect.DeepEqual(res.Intent, passOf(t, d)) {
+			t.Fatalf("own main, a bot cast, %s: searched %d no bot %v all failed %d deadline %d, tricks bot %d, played %s; want pass",
+				tc.name, res.Stats.Searched, res.NoBot, res.Stats.AllFailed, res.Stats.DeadlineHits, res.Stats.TricksBot, CandidateLabel(d, res.Intent))
+		}
+	}
+}
+
+// scriptTriggerBear is Test Bear with an upkeep trigger, so its
+// controller's upkeep puts an ability on the stack.
+const scriptTriggerBear = "Name:Test Bear\nManaCost:1\nTypes:Creature Bear\nPT:2/2\n" +
+	"T:Mode$ Phase | Phase$ Upkeep | ValidPlayer$ You | TriggerZones$ Battlefield | Execute$ TrigGain | TriggerDescription$ At the beginning of your upkeep, you gain 1 life.\n" +
+	"SVar:TrigGain:DB$ GainLife | Defined$ You | LifeAmount$ 1\nOracle:At the beginning of your upkeep, you gain 1 life.\n"
+
+// An ability an opponent controls opens the trick window as its spell does:
+// seat 1's bears trigger at its upkeep, and with that trigger alone on the
+// stack seat 0's Giant Growth is kept (the enumeration unchanged by the
+// rule), while seat 1's own trigger opens nothing at its own decision.
+func TestTricksOpponentTriggerOpensTheWindow(t *testing.T) {
+	plain := trickDeck(t)
+	trig := payWindowCard(t, scriptTriggerBear)
+	var deck []*cards.Card
+	for _, c := range plain {
+		if c.Faces[0].Name == nBear {
+			c = trig
+		}
+		deck = append(deck, c)
+	}
+	var opp, own *rules.Engine
+	playTricksDecks(t, [2][]*cards.Card{plain, deck}, 0, func(e *rules.Engine, d *decision.Decision) bool {
+		g := e.G
+		if d.Kind != decision.KPriority || len(g.Stack) != 1 || g.Active != 1 || g.Step != state.StepUpkeep {
+			return true
+		}
+		if o := g.Obj(g.Stack[0]); o == nil || o.Controller != 1 || o.Ability == nil || o.Card != nil {
+			return true
+		}
+		switch {
+		case d.Player == 0 && opp == nil && controlsCreature(e, 0) && castableNames(e, d)[nGiantGrowth]:
+			opp = e.Clone()
+			opp.EnsurePaymentActions()
+		case d.Player == 1 && own == nil && controlsCreature(e, 1) && (castableNames(e, d)[nGiantGrowth] || castableNames(e, d)[nFlight]):
+			own = e.Clone()
+			own.EnsurePaymentActions()
+		}
+		return opp == nil || own == nil
+	})
+	if opp == nil || own == nil {
+		t.Fatalf("no position with seat 1's trigger alone on the stack: seat 0's %v, seat 1's %v", opp != nil, own != nil)
+	}
+	d := opp.Pending()
+	checkTrickEnum(t, "seat 1's trigger on the stack", opp, d, trickExpect{}, true, "", []string{nGiantGrowth})
+	if g := newTrickRule("").gate(opp, d); !g.window(false) {
+		t.Fatal("seat 1's trigger on the stack: the window is closed to seat 0")
+	}
+	od := own.Pending()
+	if g := newTrickRule("").gate(own, od); g.window(false) {
+		t.Fatal("seat 1's own trigger on the stack: the window is open to seat 1")
 	}
 }
 
@@ -1246,7 +1389,7 @@ func TestTricksPriorSeat(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := az.decidePrior(context.Background(), searchseat.Env{Engine: e}, *d, cast)
+		got, err := az.decidePrior(context.Background(), searchseat.Env{Engine: e}, *d, cast, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1371,6 +1514,21 @@ func TestTricksDropsOptionsAndMacros(t *testing.T) {
 			if got := g.dropsOption(tc.o); got != tc.drop {
 				t.Fatalf("%s: option %+v dropped %v, want %v", trickWindowNames[w], tc.o, got, tc.drop)
 			}
+		}
+		// keptPriority keeps the special action, as dropsOption does: a
+		// decision with Giant Growth's cast and its Foretell added.
+		syn := *d
+		syn.Options = append(append([]decision.Option(nil), d.Options...),
+			decision.Option{Index: len(d.Options), Kind: "cast", Obj: gg, Label: "Cast Giant Growth"},
+			decision.Option{Index: len(d.Options) + 1, Kind: "cast", Obj: gg, Mode: "foretell", Label: "Foretell Giant Growth"})
+		kept, back, _, ok := r.keptPriority(e, &syn)
+		foretold, cast := false, false
+		for i, o := range kept.Options {
+			foretold = foretold || o.Mode == "foretell" && back[i] == len(d.Options)+1
+			cast = cast || o.Kind == "cast" && o.Mode == "" && o.Obj == gg
+		}
+		if !ok && closed || !foretold || cast == closed {
+			t.Fatalf("%s: keptPriority kept the Foretell %v, the cast %v (ok %v)", trickWindowNames[w], foretold, cast, ok)
 		}
 		step := func(pk rules.ScriptPick) *Macro {
 			return &Macro{Key: MacroKeyPrefix + "m", Steps: []MacroStep{{Player: 0, Kind: decision.KPriority, Picks: []rules.ScriptPick{pk}}}}
@@ -1711,15 +1869,23 @@ func TestTricksWalkReasksTheBot(t *testing.T) {
 			c := castableNames(e, d)
 			return e.G.Active == p && e.G.Step == state.StepMain1 && len(e.G.Stack) == 0 && castName(e, d, bot) == nBear && (c[nFakeDeath] || c[nGoblinSurp])
 		})
-		for _, on := range []bool{false, true} {
+		// HoldUpkeep on (its rule non-nil, the opponent's under oppHold) is
+		// outside its window here and changes nothing: the bot is asked again.
+		for _, tc := range []struct{ on, hold bool }{{false, false}, {true, false}, {true, true}} {
+			on := tc.on
 			var rule *trickRule
 			if on {
 				rule = newTrickRule(nBear)
 			}
+			k := kinds
+			if tc.hold {
+				k.hold = newHoldUpkeep("")
+			}
 			bears := handCount(e, p, nBear)
-			env, st := trickEnv(t, e, kinds, rule, p == 1, 1)
+			env, st := trickEnv(t, e, k, rule, p == 1, 1)
+			env.cfg.oppHold = tc.hold
 			if pt, err := env.advance(); err != nil || pt != nil || !env.capped {
-				t.Fatalf("seat %d, bears listed %v: point %v, err %v, capped %v", p, on, pt, err, env.capped)
+				t.Fatalf("seat %d, bears listed %v, hold %v: point %v, err %v, capped %v", p, on, tc.hold, pt, err, env.capped)
 			}
 			g := env.e.G
 			var top string
@@ -1730,9 +1896,22 @@ func TestTricksWalkReasksTheBot(t *testing.T) {
 			if p == 1 {
 				counted = st.TricksOpp
 			}
-			if on && (top == "" || top == nBear || handCount(env.e, p, nBear) != bears || counted != 1) || !on && top != nBear {
-				t.Fatalf("seat %d, bears listed %v: the walk's answer put %q on the stack (stack %v), bears in hand %d -> %d, walk %d opponent %d",
-					p, on, top, g.Stack, bears, handCount(env.e, p, nBear), st.TricksWalk, st.TricksOpp)
+			if on && (top == "" || top == nBear || handCount(env.e, p, nBear) != bears || counted != 1) || !on && top != nBear ||
+				st.HeldUpkeepWalk+st.HeldUpkeepOpp != 0 {
+				t.Fatalf("seat %d, bears listed %v, hold %v: the walk's answer put %q on the stack (stack %v), bears in hand %d -> %d, walk %d opponent %d, held %d %d",
+					p, on, tc.hold, top, g.Stack, bears, handCount(env.e, p, nBear), st.TricksWalk, st.TricksOpp, st.HeldUpkeepWalk, st.HeldUpkeepOpp)
+			}
+			// reask itself, outside HoldUpkeep's window: a non-nil rule asks
+			// the bot again as a nil one does.
+			if on && !tc.hold {
+				fresh, _ := trickEnv(t, e, kinds, rule, p == 1, 1)
+				pd := fresh.e.Pending()
+				marker := decision.Intent{Seq: pd.Seq, Player: pd.Player, Choices: []int{-7}}
+				free := fresh.reask(pd, rule, nil, marker)
+				held := fresh.reask(pd, rule, newHoldUpkeep(""), marker)
+				if reflect.DeepEqual(held, marker) || !reflect.DeepEqual(held, free) {
+					t.Fatalf("seat %d, bears listed: reask with HoldUpkeep outside its window %s, without it %s", p, CandidateLabel(pd, held), CandidateLabel(pd, free))
+				}
 			}
 		}
 	}
@@ -1835,5 +2014,133 @@ func TestTricksWalkReasksTheBot(t *testing.T) {
 		if !reflect.DeepEqual(free, passOf(t, pd)) || !reflect.DeepEqual(held, marker) {
 			t.Fatalf("own upkeep: asked again %+v without HoldUpkeep (want pass), %+v with it (want the rule's own answer)", free, held)
 		}
+	}
+}
+
+// upkeepFloating is a clone of e (its pending decision seat p's own upkeep,
+// the stack empty) with R, G and W floating for seat p: Giant Growth and
+// Fleeting Flight castable from the pool, and Goblin Surprise too.
+func upkeepFloating(t *testing.T, e *rules.Engine) *rules.Engine {
+	t.Helper()
+	c := e.Clone()
+	for _, sym := range []string{"R", "G", "W"} {
+		floatMana(t, c, sym)
+	}
+	d := c.Pending()
+	if c.G.Step != state.StepUpkeep || c.G.Active != d.Player || len(c.G.Stack) != 0 {
+		t.Fatalf("not seat %d's own empty-stack upkeep: step %v, active %d, stack %d", d.Player, c.G.Step, c.G.Active, len(c.G.Stack))
+	}
+	return c
+}
+
+// seat1Upkeep is a trickDeck position at seat 1's own upkeep, the stack
+// empty, with three Prisms untapped and Goblin Surprise and Giant Growth or
+// Fleeting Flight castable.
+func seat1Upkeep(t *testing.T) *rules.Engine {
+	t.Helper()
+	return trickPosition(t, "seat 1's own upkeep, Goblin Surprise castable", 1, func(e *rules.Engine, d *decision.Decision, bot decision.Intent) bool {
+		c := castableNames(e, d)
+		return e.G.Active == 1 && e.G.Step == state.StepUpkeep && len(e.G.Stack) == 0 && untappedPrisms(e, 1) >= 3 && c[nGoblinSurp] && (c[nGiantGrowth] || c[nFlight])
+	})
+}
+
+// Inside HoldUpkeep's window (the seat's own empty-stack upkeep), R, G and W
+// floating, Giant Growth and Fleeting Flight exempt from the hold: the walk
+// bot casts one of them, Tricks drops it, and the rule's pass is played --
+// the bot is not asked again (it would cast Goblin Surprise, as it does with
+// no HoldUpkeep). The searching seat's walk bot (TricksWalk) and a mirrored
+// opponent's at its own upkeep (TricksOpp, under oppHold); without the
+// exemption HoldUpkeep holds the cast first (HeldUpkeepWalk, HeldUpkeepOpp).
+func TestTricksWalkReaskInsideHoldUpkeep(t *testing.T) {
+	ws := trickWindows(t)
+	exempt := nGiantGrowth + "|" + nFlight
+	for _, p := range []state.PlayerID{0, 1} {
+		var e *rules.Engine
+		if p == 0 {
+			e = upkeepFloating(t, ws[twUpkeep])
+		} else {
+			e = upkeepFloating(t, seat1Upkeep(t))
+		}
+		for _, tc := range []struct {
+			name    string
+			hold    *holdUpkeep
+			wantTop string
+			want    [2]int // TricksWalk or TricksOpp, HeldUpkeepWalk or HeldUpkeepOpp
+		}{
+			{"exempt", newHoldUpkeep(exempt), "", [2]int{1, 0}},
+			// Goblin Surprise's modes decision follows the cast: its pump mode
+			// is gated too (the second count).
+			{"no HoldUpkeep", nil, nGoblinSurp, [2]int{2, 0}},
+			{"held", newHoldUpkeep(""), "", [2]int{0, 1}},
+		} {
+			k := Kinds{Attackers: true, Blockers: true}
+			k.hold = tc.hold
+			growths, flights := handCount(e, p, nGiantGrowth), handCount(e, p, nFlight)
+			env, st := trickEnv(t, e, k, newTrickRule(""), p == 1, 1)
+			env.cfg.oppHold = tc.hold != nil
+			if pt, err := env.advance(); err != nil || pt != nil || !env.capped {
+				t.Fatalf("seat %d, %s: point %v, err %v, capped %v", p, tc.name, pt, err, env.capped)
+			}
+			g := env.e.G
+			var top string
+			if len(g.Stack) == 1 {
+				top = cardName(env.e, g.Stack[0])
+			}
+			got := [2]int{st.TricksWalk, st.HeldUpkeepWalk}
+			if p == 1 {
+				got = [2]int{st.TricksOpp, st.HeldUpkeepOpp}
+			}
+			if top != tc.wantTop || len(g.Stack) > 1 || handCount(env.e, p, nGiantGrowth) != growths || handCount(env.e, p, nFlight) != flights || got != tc.want {
+				t.Fatalf("seat %d, %s: the walk put %q on the stack (stack %v), Giant Growths %d -> %d, Fleeting Flights %d -> %d, counted %v; want %q, %v",
+					p, tc.name, top, g.Stack, growths, handCount(env.e, p, nGiantGrowth), flights, handCount(env.e, p, nFlight), got, tc.wantTop, tc.want)
+			}
+		}
+	}
+}
+
+// reask asks the bot that answered: with no auto-pay walk bot (a seat
+// without AutoPayment) the plain bot over the kept decision, which casts
+// Goblin Surprise in the own upkeep with R, G and W floating; a mirrored
+// opponent's walk bot on the opponent's own board, at a position of seat
+// 1's where the searching seat's board would answer otherwise.
+func TestTricksWalkReaskBotAndBoard(t *testing.T) {
+	ws := trickWindows(t)
+	kinds := Kinds{Attackers: true, Blockers: true}
+	rule := newTrickRule("")
+	{
+		e := upkeepFloating(t, ws[twUpkeep])
+		env, _ := trickEnv(t, e, kinds, rule, false, 1)
+		env.actorBot = nil
+		pd := env.e.Pending()
+		marker := decision.Intent{Seq: pd.Seq, Player: pd.Player, Choices: []int{-7}}
+		if got := env.reask(pd, rule, nil, marker); castName(env.e, pd, got) != nGoblinSurp {
+			t.Fatalf("own upkeep, R G W floating, the plain bot: asked again %s (%+v), want Goblin Surprise", CandidateLabel(pd, got), got)
+		}
+	}
+	// reaskOn is the auto-pay bot's answer at e's pending decision of seat
+	// 1's asked again over what the rule keeps, on seat p's board.
+	reaskOn := func(e *rules.Engine, d *decision.Decision, p state.PlayerID) decision.Intent {
+		kept, back, dropped, _ := rule.keptPriority(e, d)
+		b := botpolicy.BoardFromGame(e.G, e, p)
+		uncastable(b, dropped)
+		in, _ := seat.NewBot(7).EnableAutoPayMana().DecideBoard(context.Background(), b, kept)
+		in, _ = mapBack(in, back)
+		return in
+	}
+	e := trickPosition(t, "seat 1's walk-bot answer dropped, asked again otherwise on seat 0's board", 1, func(e *rules.Engine, d *decision.Decision, bot decision.Intent) bool {
+		if _, dropped := rule.answer(e, d, bot); !dropped {
+			return false
+		}
+		_, _, _, ok := rule.keptPriority(e, d)
+		return ok && !reflect.DeepEqual(reaskOn(e, d, 1), reaskOn(e, d, 0))
+	})
+	env, _ := trickEnv(t, e, kinds, rule, true, 1)
+	env.e.EnsurePaymentActions() // advance builds them before the opponent's walk bot answers
+	pd := env.e.Pending()
+	marker := decision.Intent{Seq: pd.Seq, Player: pd.Player, Choices: []int{-7}}
+	got, want, wrong := env.reask(pd, rule, nil, marker), reaskOn(env.e, pd, 1), reaskOn(env.e, pd, 0)
+	t.Logf("seat 1 at turn %d %v: asked again %s; on seat 0's board %s", env.e.G.Turn, env.e.G.Step, CandidateLabel(pd, got), CandidateLabel(pd, wrong))
+	if !reflect.DeepEqual(got, want) || reflect.DeepEqual(got, wrong) {
+		t.Fatalf("seat 1 at turn %d %v: asked again %s, want %s on its own board (seat 0's: %s)", env.e.G.Turn, env.e.G.Step, CandidateLabel(pd, got), CandidateLabel(pd, want), CandidateLabel(pd, wrong))
 	}
 }
