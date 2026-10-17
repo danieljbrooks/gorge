@@ -1219,3 +1219,180 @@ func checkHeldSpecial(t *testing.T, name string, e *rules.Engine, d *decision.De
 		}
 	}
 }
+
+// A bot answer that picks a "cast" option the rule does not hold stands at a
+// held window (Stats.HeldUpkeepBot 0): an exempt card's legacy cast with mana
+// floating, and a Foretell or Suspend choice (special actions that cast no
+// spell). castsHeld reads holdsOption, not the option's Kind. A non-exempt
+// cast beside them is still passed.
+func TestHoldUpkeepKeepsBotAnswersItDoesNotHold(t *testing.T) {
+	choice := func(d *decision.Decision, ok func(o decision.Option) bool) decision.Intent {
+		t.Helper()
+		for _, o := range d.Options {
+			if ok(o) {
+				return decision.Intent{Seq: d.Seq, Player: d.Player, Choices: []int{o.Index}}
+			}
+		}
+		t.Fatal("no such option")
+		return decision.Intent{}
+	}
+	// at searches e's pending decision with the bot answering bot: Sims 0
+	// (the candidates are built and the answer is the bot's, or the rule's
+	// pass), the rule on with exempt.
+	at := func(e *rules.Engine, bot decision.Intent, autoPay bool, exempt string) Result {
+		t.Helper()
+		c := e.Clone()
+		opts := DefaultOptions()
+		opts.Sims, opts.AutoPayment, opts.HoldUpkeep, opts.HoldUpkeepExempt = 0, autoPay, true, exempt
+		return searchAt(t, c, c.Pending(), bot, nil, opts)
+	}
+	ws := holdWindows(t)
+	e := ws[winOwnUpkeep].Clone()
+	d := tapIsland(t, e)
+	insight := choice(d, func(o decision.Option) bool { return o.Kind == "cast" && cardName(e, o.Obj) == "Test Insight" })
+	glimpse := choice(d, func(o decision.Option) bool { return o.Kind == "cast" && cardName(e, o.Obj) == "Test Glimpse" })
+	for _, autoPay := range []bool{false, true} {
+		c := e.Clone()
+		if autoPay {
+			c.EnsurePaymentActions()
+		}
+		if r := at(c, insight, autoPay, "Test Insight"); r.Stats.HeldUpkeepBot != 0 || r.Stats.HeldUpkeep != 1 || !reflect.DeepEqual(r.Intent, insight) {
+			t.Fatalf("autopay %v, the exempt Test Insight's legacy cast: bot passed %d, held %d, played %+v, want %+v", autoPay, r.Stats.HeldUpkeepBot, r.Stats.HeldUpkeep, r.Intent, insight)
+		}
+		if r := at(c, glimpse, autoPay, "Test Insight"); r.Stats.HeldUpkeepBot != 1 || !reflect.DeepEqual(r.Intent, passOf(t, d)) {
+			t.Fatalf("autopay %v, Test Glimpse's legacy cast (not exempt): bot passed %d, played %+v", autoPay, r.Stats.HeldUpkeepBot, r.Intent)
+		}
+	}
+	se := specialWindow(t)
+	sd := se.Pending()
+	for _, mode := range []string{"foretell", "suspend"} {
+		bot := choice(sd, func(o decision.Option) bool { return o.Kind == "cast" && o.Mode == mode })
+		for _, autoPay := range []bool{false, true} {
+			c := se.Clone()
+			if autoPay {
+				c.EnsurePaymentActions()
+			}
+			if r := at(c, bot, autoPay, ""); r.Stats.HeldUpkeepBot != 0 || r.Stats.HeldUpkeep != 1 || !reflect.DeepEqual(r.Intent, bot) {
+				t.Fatalf("autopay %v, a %s choice: bot passed %d, held %d, played %+v, want %+v", autoPay, mode, r.Stats.HeldUpkeepBot, r.Stats.HeldUpkeep, r.Intent, bot)
+			}
+		}
+	}
+}
+
+// A root the rule changes through a held macro alone is counted
+// (Stats.HeldUpkeep 1). Both instants exempt, the vocabulary is the unheld
+// one; the macro's first step (the Beacon's ability) is offered, and a later
+// step pays for an object that is not exempt (holdsMacro holds any such
+// step), so the macro is left out and nothing else changes.
+func TestHoldUpkeepCountsAHeldMacroAlone(t *testing.T) {
+	ws := holdWindows(t)
+	e := ws[winOwnUpkeep]
+	d := e.Pending()
+	var pick rules.ScriptPick
+	for _, o := range d.Options {
+		if o.Kind == "ability" {
+			pick = rules.ScriptPick{Kind: o.Kind, Obj: o.Obj, Label: o.Label}
+			break
+		}
+	}
+	var land state.ObjID
+	for _, id := range e.G.Zone(state.ZBattlefield, 0) {
+		if cardName(e, id) == "Island" {
+			land = id
+			break
+		}
+	}
+	if pick.Kind == "" || land == 0 {
+		t.Fatalf("own upkeep: ability %+v, Island %d", pick, land)
+	}
+	key := Key(MacroKeyPrefix + "beacon-then-pay")
+	macro := func(r *Root) {
+		r.Macros = []Macro{{Key: key, Label: "the Beacon, then a payment", Steps: []MacroStep{
+			{Player: 0, Kind: decision.KPriority, Picks: []rules.ScriptPick{pick}},
+			{Player: 0, Kind: decision.KPriority, PayCast: land},
+		}}}
+	}
+	wide := func(o *Options) { o.Limit = BenchCandidateLimit }
+	const exempt = "Test Insight|Test Glimpse"
+	off := holdSearch(t, ws, winOwnUpkeep, false, "", macro, wide)
+	on := holdSearch(t, ws, winOwnUpkeep, true, exempt, macro, wide)
+	plain := holdSearch(t, ws, winOwnUpkeep, true, exempt, nil, wide)
+	var rest []Key
+	for _, k := range off.Keys {
+		if k != key {
+			rest = append(rest, k)
+		}
+	}
+	if !containsKey(off.Keys, key) || off.Stats.HeldUpkeep != 0 {
+		t.Fatalf("off: keys %v, held %d, want the macro offered", off.Keys, off.Stats.HeldUpkeep)
+	}
+	if plain.Stats.HeldUpkeep != 0 {
+		t.Fatalf("no macro, both instants exempt: held %d, want nothing held", plain.Stats.HeldUpkeep)
+	}
+	if on.Stats.HeldUpkeep != 1 || on.Stats.Searched != 1 || containsKey(on.Keys, key) || !reflect.DeepEqual(on.Keys, rest) {
+		t.Fatalf("on: held %d, searched %d, keys %v, want %v without the macro", on.Stats.HeldUpkeep, on.Stats.Searched, on.Keys, rest)
+	}
+}
+
+// heldEnvKinds is heldEnv over kinds (the rule hung on them), the walk's
+// step cap maxSteps.
+func heldEnvKinds(t *testing.T, e *rules.Engine, kinds Kinds, hold *holdUpkeep, oppHold bool, maxSteps int) (*engineEnv, *Stats) {
+	t.Helper()
+	c := e.Clone()
+	kinds.hold = hold
+	st := &Stats{}
+	cfg := &walkConfig{kinds: kinds, limit: DefaultOptions().Limit, maxSteps: maxSteps, envSeed: 0x686f6c64, actor: 0, rootDec: c.Pending(), stats: st,
+		oppNodes: true, oppForks: []*searchprobe.Forker{nil, searchprobe.NewCollector(1).Forker()}, oppHold: oppHold}
+	env, err := newEngineEnv(World{Engine: c, Observer: searchprobe.NewCollector(0)}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return env, st
+}
+
+// A walk-bot cast at an in-walk decision that is no point (priority not a
+// searched kind) at a held window: the searching seat's and the mirrored
+// opponent's are passed and counted (HeldUpkeepWalk, HeldUpkeepOpp), an
+// unmirrored opponent's stands and is not counted -- the opponent's
+// walk-bot answer reads oppHoldRule, never the seat's rule. The walk is cut
+// after the first answer, so the played answer is the one in question.
+func TestHoldUpkeepWalkBotCastAtANonPoint(t *testing.T) {
+	ws := holdWindows(t)
+	kinds := AllKinds()
+	kinds.Priority = false
+	for _, tc := range []struct {
+		name    string
+		w       int
+		oppHold bool
+		passed  bool
+	}{
+		{"seat", winOwnUpkeep, false, true},
+		{"opponent, unmirrored", winOppOwnUpkeep, false, false},
+		{"opponent, mirrored", winOppOwnUpkeep, true, true},
+	} {
+		for _, hold := range []bool{false, true} {
+			e := ws[tc.w].Clone()
+			d := tapIsland(t, e)
+			var rule *holdUpkeep
+			if hold {
+				rule = newHoldUpkeep("")
+			}
+			env, st := heldEnvKinds(t, e, kinds, rule, tc.oppHold, 1)
+			hand := append([]state.ObjID(nil), env.e.G.Zone(state.ZHand, d.Player)...)
+			if pt, err := env.advance(); err != nil || pt != nil || !env.capped {
+				t.Fatalf("%s, hold %v: point %v, err %v, capped %v; want the walk cut after one answer", tc.name, hold, pt, err, env.capped)
+			}
+			kept := true
+			for _, id := range hand {
+				if o := env.e.G.Obj(id); o == nil || o.Zone != state.ZHand {
+					kept = false
+				}
+			}
+			counted := st.HeldUpkeepWalk + st.HeldUpkeepOpp
+			want := hold && tc.passed
+			if kept != want || (counted > 0) != want || st.HeldUpkeepWalk > 0 && tc.w != winOwnUpkeep || st.HeldUpkeepOpp > 0 && tc.w == winOwnUpkeep {
+				t.Fatalf("%s, hold %v: hand kept %v, counted walk %d opponent %d; want passed and counted %v", tc.name, hold, kept, st.HeldUpkeepWalk, st.HeldUpkeepOpp, want)
+			}
+		}
+	}
+}
