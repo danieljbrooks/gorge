@@ -27,8 +27,10 @@ var (
 	auditOracle string  // -audit-oracle: the oracle's policy spec (an az spec)
 	auditRate   float64 // -audit-rate: the share of side A's searched decisions audited
 	auditPath   string  // -audit-out
-	auditSpec   *policySpec
-	auditW      *auditWriter
+	// -audit-instants: audit only the decisions where the seat can cast an instant-speed spell (declog.go)
+	auditInstants bool
+	auditSpec     *policySpec
+	auditW        *auditWriter
 )
 
 type auditWriter struct {
@@ -111,7 +113,7 @@ func newAuditSeat(agent, oracle *azmcts.Seat, seed uint64, pair, leg, seat int) 
 }
 
 func (a *auditSeat) DecideSearch(ctx context.Context, env searchseat.Env, d decision.Decision) (decision.Intent, error) {
-	if a.rng.Float64() >= auditRate {
+	if a.rng.Float64() >= auditRate || (auditInstants && !instantWindow(env.Engine, &d)) {
 		a.agent = nil
 		return a.Seat.DecideSearch(ctx, env, d)
 	}

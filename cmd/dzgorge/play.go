@@ -187,6 +187,8 @@ func runPlay(args []string) int {
 		"first (audit.go); needs -audit-out")
 	fs.Float64Var(&auditRate, "audit-rate", 0.1, "share of side A's searched decisions the oracle audits")
 	fs.StringVar(&auditPath, "audit-out", "", "audit JSONL (one line per audited decision)")
+	fs.BoolVar(&auditInstants, "audit-instants", false, "audit only the decisions where side A can cast an "+
+		"instant-speed spell (an instant or flash card in hand)")
 	fs.StringVar(&declogPath, "declog", "", "decision log JSONL for diagnostics (declog.go): instant-speed priority "+
 		"decisions, targets and stack objects of both seats; reads only")
 	fs.Parse(args)
@@ -248,10 +250,15 @@ func runPlay(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	for _, p := range specs {
+	// The audit oracle is a seat too: it needs the card lookup, and a :closedlist one the belief.
+	withAudit := specs
+	if auditSpec != nil {
+		withAudit = append(append([]*policySpec{}, specs...), auditSpec)
+	}
+	for _, p := range withAudit {
 		p.setLookup(reg)
 	}
-	if specs[0].Closed || specs[1].Closed {
+	if specs[0].Closed || specs[1].Closed || (auditSpec != nil && auditSpec.Closed) {
 		bd, bp := *beliefDecks, *beliefPool
 		if bd == "" {
 			bd = *decksDir
@@ -270,7 +277,7 @@ func runPlay(args []string) int {
 			return 1
 		}
 		fmt.Fprintf(os.Stderr, "belief: %d %s decks (%d skipped), %d distinct cards, %.1fs\n", b.Decks(), *beliefSplit, skipped, b.Cards().Len(), time.Since(tb).Seconds())
-		for _, p := range specs {
+		for _, p := range withAudit {
 			p.setBelief(b)
 		}
 	}
@@ -673,6 +680,10 @@ var noPaidManaCensus, mmStatsOn bool
 func playOne(jb job, specs []*policySpec, dc *deckCache, reg *cards.Registry, maxTurns, maxIntents, mulligans int, record bool) (gameRec, []byte) {
 	rec := gameRec{Game: jb.game, Pair: jb.pair, Leg: jb.leg, Seed: jb.seed, Decks: jb.decks, Winner: -1}
 	seats := make([]seat.Seat, 2)
+	var dl *decLog
+	if declogW != nil {
+		dl = newDecLog(jb)
+	}
 	search := false
 	var vrecs []policynet.VisitRecord
 	for s := 0; s < 2; s++ {
@@ -693,6 +704,9 @@ func playOne(jb job, specs []*policySpec, dc *deckCache, reg *cards.Registry, ma
 			st = newAuditSeat(az, ost.(*azmcts.Seat), jb.seed^uint64(s+1), jb.pair, jb.leg, s)
 		}
 		seats[s] = st
+		if az, ok := st.(*azmcts.Seat); ok && dl != nil && !record {
+			az.SetRecorder(dl.searchRecorder(s)) // -declog's search stats; a corpus game keeps its own recorder
+		}
 		if sp.searches() {
 			search = true
 		}
@@ -722,10 +736,6 @@ func playOne(jb job, specs []*policySpec, dc *deckCache, reg *cards.Registry, ma
 	}
 	cfg.Spare = spare
 	var eng *rules.Engine
-	var dl *decLog
-	if declogW != nil {
-		dl = newDecLog(jb)
-	}
 	var auto [2]bool
 	for s := 0; s < 2; s++ {
 		k := specs[jb.sides[s]]

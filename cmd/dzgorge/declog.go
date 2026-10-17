@@ -22,6 +22,7 @@ import (
 
 	"github.com/adams-shaun/gorge/cards"
 	"github.com/adams-shaun/gorge/decision"
+	"github.com/adams-shaun/gorge/internal/policynet"
 	"github.com/adams-shaun/gorge/rules"
 	"github.com/adams-shaun/gorge/state"
 )
@@ -70,6 +71,9 @@ type dlPrio struct {
 	Choice   string   `json:"choice"`   // the chosen option's kind (pass, cast, play_land, activate, ...), or payment
 	Cast     *dlObj   `json:"cast,omitempty"`
 	Options  []string `json:"options"` // every option's kind:label
+	// Search is the seat's search record for this decision, when it searched (cands index its priority vocabulary:
+	// [0] is pass, then the payment casts in engine order).
+	Search *auditSide `json:"search,omitempty"`
 }
 
 type dlTargetLine struct {
@@ -120,6 +124,12 @@ type decLog struct {
 	order []uint64
 	seen  map[uint64]*dlStackLine
 	game  dlGame
+	last  [2]*policynet.VisitRecord // each seat's latest search record (searchRecorder)
+}
+
+// searchRecorder keeps seat's search records for the prio lines (installed only when the game records no corpus).
+func (l *decLog) searchRecorder(seat int) func(policynet.VisitRecord) {
+	return func(r policynet.VisitRecord) { l.last[seat] = &r }
 }
 
 func newDecLog(jb job) *decLog {
@@ -268,6 +278,33 @@ func combatants(e *rules.Engine) (att, blk int) {
 		}
 	}
 	return att, blk
+}
+
+// instantWindow reports whether seat can cast an instant-speed spell from its hand at priority decision d (the live
+// engine's pending one): a cast option, or an auto-pay cast with a plan (built if need be: a pure read).
+func instantWindow(e *rules.Engine, d *decision.Decision) bool {
+	if e == nil || d.Kind != decision.KPriority || instantsInHand(e, d.Player) == 0 {
+		return false
+	}
+	ok := func(id state.ObjID) bool {
+		o := e.G.Obj(id)
+		return o != nil && o.Zone == state.ZHand && instantSpeed(o.Face())
+	}
+	for _, o := range d.Options {
+		if o.Kind == "cast" && ok(o.Obj) {
+			return true
+		}
+	}
+	payments := d.PaymentActions
+	if !d.PaymentActionsBuilt {
+		payments = e.EnsurePaymentActions()
+	}
+	for _, a := range payments {
+		if len(a.Plans) > 0 && ok(a.Cast.Object) {
+			return true
+		}
+	}
+	return false
 }
 
 func instantsInHand(e *rules.Engine, p state.PlayerID) int {
@@ -422,6 +459,10 @@ func (l *decLog) priority(e *rules.Engine, seat int, d *decision.Decision, in de
 	}
 	for _, o := range d.Options {
 		r.Options = append(r.Options, o.Kind+":"+strings.TrimSpace(o.Label))
+	}
+	if sr := l.last[seat]; sr != nil && sr.Sequence == d.Seq {
+		t := trimRecord(sr)
+		r.Search = &t
 	}
 	declogW.write(r)
 }
