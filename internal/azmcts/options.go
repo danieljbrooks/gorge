@@ -352,6 +352,12 @@ type Stats struct {
 	// means a seat reached a decision without payment plans built or its
 	// bot preferred tapping by hand; near zero is healthy.
 	BotTapRerooted int
+	// LandFirst (DraftZero) counts priority roots that would have been
+	// rerooted (Root.NoBot) where the wrapped bot, asked again without its
+	// mana activations (Root.BotAsk), played a land: the land drop was
+	// played unsearched, as wherever the bot plays a land, instead of a
+	// search over a vocabulary with no land play (Root.landFirst).
+	LandFirst int
 	// Livelocks counts simulations whose world tripped the engine's
 	// livelock contract (*rules.LivelockError: the token-plan mint cap, the
 	// runaway watchers) -- an unrepresentable game the bench ends as a
@@ -558,6 +564,7 @@ func (s *Stats) Add(o Stats) {
 	s.RedealRefused += o.RedealRefused
 	s.RootRefused += o.RootRefused
 	s.BotTapRerooted += o.BotTapRerooted
+	s.LandFirst += o.LandFirst
 	s.Livelocks += o.Livelocks
 	s.DeadlineHits += o.DeadlineHits
 	s.OppPoints += o.OppPoints

@@ -327,9 +327,14 @@ func (s *Seat) DecideSearch(ctx context.Context, env searchseat.Env, d decision.
 	// no bot candidate instead (Root.NoBot); every failure path still plays
 	// the bot's tap. Stats.BotTapRerooted counts it.
 	// SeatConfig.ManualTaps (DraftZero) turns the backstop off: the seat as before 9afeacb2e.
+	// The bot's land drop comes first (DraftZero, Root.BotAsk): its tap gate
+	// runs before its land drop, and the vocabulary has no land play, so
+	// where the bot asked again without its mana activations plays a land,
+	// that land is played unsearched instead (Stats.LandFirst).
 	tapReroot := !s.cfg.ManualTaps && opts.AutoPayment && d.Kind == decision.KPriority && priorityBase(&d, botIn) == BaseActivate
 	if tapReroot {
 		root.NoBot = true
+		root.BotAsk = func(k decision.Decision) (decision.Intent, error) { return s.def.DecideBoard(ctx, env.Board, k) }
 	}
 	res, err := Search(ctx, root, src, s.net, opts)
 	if tapReroot && res.Stats.Searched == 1 {

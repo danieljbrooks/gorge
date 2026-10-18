@@ -47,7 +47,10 @@ import (
 //	                             tapping lands by hand. On an az seat only, a decision whose bot answer
 //	                             still taps by hand is rerouted: searched over the payment vocabulary
 //	                             with no bot candidate (azmcts Root.NoBot; play's summary counts them as
-//	                             az_bot_tap_rerooted, -declog marks their prio lines rerooted). A prior
+//	                             az_bot_tap_rerooted, -declog marks their prio lines rerooted) -- unless
+//	                             its bot, asked again without its mana taps, plays a land: the bot's tap
+//	                             gate runs before its land drop, and the vocabulary has no land play, so
+//	                             the land is played first, unsearched (az_land_first). A prior
 //	                             seat has no such reroute: it gains the payment plans but still plays
 //	                             such a bot tap unsearched
 //	   :manualtaps               with :autopay: the seat as before gorge 9afeacb2e, to replay older games

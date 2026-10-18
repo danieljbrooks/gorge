@@ -299,6 +299,9 @@ func azCostReport(totalGames int) string {
 	if total.BotTapRerooted > 0 {
 		fmt.Fprintf(&b, "tap-rerooted %d (bot answered a manual mana tap under auto-payment; searched with no bot candidate)\n", total.BotTapRerooted)
 	}
+	if total.LandFirst > 0 {
+		fmt.Fprintf(&b, "land-first %d (a bot tap under auto-payment whose bot, asked again without mana activations, played a land: played unsearched, not rerooted)\n", total.LandFirst)
+	}
 	if total.RedealRefused > 0 || total.NoWorld > 0 {
 		var reasons []string
 		count := make(map[string]int)

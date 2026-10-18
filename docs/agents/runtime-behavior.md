@@ -80,7 +80,11 @@ generation-0 `az-redeal`), each named with its reason in
 registered bot answering false. As a backstop, an AutoPayment az seat whose
 bot still answers a mana tap searches the full payment vocabulary with no
 bot candidate (`Root.NoBot`) and counts `Stats.BotTapRerooted`
-(botbench's `tap-rerooted` line). Human seats are unchanged: the host builds
+(botbench's `tap-rerooted` line). The vocabulary has no land play, and the
+bot's tap gate runs before its land drop, so the seat first asks its bot
+again without the mana activations: a land play it answers is played
+unsearched (`Stats.LandFirst`, botbench's `land-first` line) and the reroot
+waits for the next decision. Human seats are unchanged: the host builds
 their plans under `TableConfig.AutoMana` and the client only picks.
 
 ## Seat-privacy boundary

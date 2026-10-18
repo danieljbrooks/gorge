@@ -42,6 +42,15 @@ type Root struct {
 	Macros []Macro
 	BotKey Key
 	NoBot  bool
+	// BotAsk (DraftZero), when set, asks the wrapped bot that answered Bot
+	// again, over another decision at the same position. A root rerooted
+	// for want of a bot candidate (NoBot alone, under AutoPayment with
+	// priority searched: Seat.DecideSearch's bot-tap backstop) plays the
+	// bot's land drop first when it has one (Root.landFirst): the vocabulary
+	// offers no land play, so the reroot would lose the land drop wherever
+	// the search passes, and the bot's tap gate runs before its land drop.
+	// Nil changes nothing.
+	BotAsk func(decision.Decision) (decision.Intent, error)
 }
 
 // Result is one Search. Candidates, Keys, Labels, Visits, Avail, Prior and
@@ -221,6 +230,13 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 	kinds := opts.Kinds
 	if kinds.Choose {
 		kinds.chooseMax = opts.Limit
+	}
+	// A reroot plays the bot's land drop first (Root.BotAsk): the root then
+	// holds the land play as the bot's answer and is skipped, as every root
+	// whose bot plays a land is (Stats.LandFirst).
+	if root.landFirst(opts.AutoPayment, kinds) {
+		res.Intent = root.Bot
+		res.Stats.LandFirst = 1
 	}
 	cands, kind, why, ok, cut, botFound := rootCands(root.Observer, root, kinds, limit, opts.AutoPayment, &enumBoard)
 	res.Kind = kind
