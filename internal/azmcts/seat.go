@@ -341,10 +341,13 @@ func (s *Seat) DecideSearch(ctx context.Context, env searchseat.Env, d decision.
 	// The bot's land drop comes first (DraftZero, Root.BotAsk): its tap gate
 	// runs before its land drop, and the vocabulary has no land play, so
 	// where the bot asked again without its mana activations plays a land,
-	// that land is played unsearched instead (Stats.LandFirst).
+	// that land is played unsearched instead (Stats.LandFirst). So it does
+	// where Options.Tricks reroots a dropped bot cast (Search).
 	tapReroot := !s.cfg.ManualTaps && opts.AutoPayment && d.Kind == decision.KPriority && priorityBase(&d, botIn) == BaseActivate
 	if tapReroot {
 		root.NoBot = true
+	}
+	if tapReroot || opts.Tricks {
 		root.BotAsk = func(k decision.Decision) (decision.Intent, error) { return s.def.DecideBoard(ctx, env.Board, k) }
 	}
 	res, err := Search(ctx, root, src, s.net, opts)
@@ -430,7 +433,8 @@ func (s *Seat) DigestFree() bool { return true }
 // Options.HoldUpkeep, pass in place of a held cast; under Options.Tricks,
 // Search's answer in place of a dropped one). Candidate 0 is the bot's
 // answer unless the root has no bot candidate (Result.NoBot: Options.Tricks
-// rerooted a dropped bot cast), where it is played as itself. botIn is the
+// rerooted a dropped bot cast), where it is played as itself; such a reroot
+// plays the bot's land drop first where it has one (Root.BotAsk). botIn is the
 // answer trickTap leaves, tapped whether it replaced the bot's tap
 // (Stats.TricksTap).
 func (s *Seat) decidePrior(ctx context.Context, env searchseat.Env, d decision.Decision, botIn decision.Intent, tapped bool) (decision.Intent, error) {
@@ -438,7 +442,13 @@ func (s *Seat) decidePrior(ctx context.Context, env searchseat.Env, d decision.D
 	opts := s.cfg.Search
 	opts.Sims, opts.Noise, opts.Sample = 0, false, false
 	opts.Seed = DecisionSeed(s.seed, d.Seq)
-	res, err := Search(ctx, Root{Engine: env.Engine, Decision: &d, Bot: botIn, Observer: obs}, nil, s.net, opts)
+	root := Root{Engine: env.Engine, Decision: &d, Bot: botIn, Observer: obs}
+	if opts.Tricks {
+		// A reroot of a dropped bot cast plays the bot's land drop first, as
+		// at DecideSearch (Root.BotAsk).
+		root.BotAsk = func(k decision.Decision) (decision.Intent, error) { return s.def.DecideBoard(ctx, env.Board, k) }
+	}
+	res, err := Search(ctx, root, nil, s.net, opts)
 	if err != nil {
 		return decision.Intent{}, err
 	}

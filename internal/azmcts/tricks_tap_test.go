@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/adams-shaun/gorge/botpolicy"
@@ -11,6 +12,7 @@ import (
 	"github.com/adams-shaun/gorge/internal/searchprobe"
 	"github.com/adams-shaun/gorge/internal/searchseat"
 	"github.com/adams-shaun/gorge/rules"
+	"github.com/adams-shaun/gorge/seat"
 	"github.com/adams-shaun/gorge/state"
 )
 
@@ -25,6 +27,22 @@ func tapPosition(t *testing.T) *rules.Engine {
 	return trickPosition(t, "seat 0 taps in its own main phase, the rule dropping a cast, nothing left to cast", 0,
 		func(e *rules.Engine, d *decision.Decision, bot decision.Intent) bool {
 			if e.G.Active != 0 || !e.G.Step.IsMain() || len(e.G.Stack) != 0 || priorityBase(d, bot) != BaseActivate {
+				return false
+			}
+			kept, _, _, ok := newTrickRule("").keptPriority(e, d)
+			return ok && !castLeft(e, d, &kept)
+		})
+}
+
+// tapLandPosition is tapPosition with a land play offered: seat 0's own main
+// phase, its land drop not made, the auto-pay bot tapping by hand (its tap
+// gate runs before its land drop) while the rule drops a cast and nothing it
+// keeps is left to cast.
+func tapLandPosition(t *testing.T) *rules.Engine {
+	t.Helper()
+	return trickPosition(t, "seat 0 taps in its own main phase with a land play offered, the rule dropping a cast, nothing left to cast", 0,
+		func(e *rules.Engine, d *decision.Decision, bot decision.Intent) bool {
+			if e.G.Active != 0 || !e.G.Step.IsMain() || len(e.G.Stack) != 0 || priorityBase(d, bot) != BaseActivate || optionOf(d, "play_land") < 0 {
 				return false
 			}
 			kept, _, _, ok := newTrickRule("").keptPriority(e, d)
@@ -64,12 +82,32 @@ func TestTricksTapAnswer(t *testing.T) {
 	floatMana(t, floating, "G")
 	floatMana(t, floating, "W")
 	floating.EnsurePaymentActions()
+	landPos := tapLandPosition(t)
+	// tapLandPosition's decision with a "cast" option of the dropped card
+	// first (a legacy cast the rule drops), so the kept decision is
+	// renumbered while nothing is left to cast.
+	renumbered := *landPos.Pending()
+	{
+		_, _, dropped, _ := newTrickRule("").keptPriority(landPos, &renumbered)
+		opts := []decision.Option{{Index: 0, Kind: "cast", Obj: dropped[0], Player: renumbered.Player, Label: "Cast " + cardName(landPos, dropped[0])}}
+		for _, o := range renumbered.Options {
+			o.Index = len(opts)
+			opts = append(opts, o)
+		}
+		renumbered.Options = opts
+	}
 	for _, tc := range []struct {
 		name string
 		e    *rules.Engine
-	}{{"own main, G and W floating", floating}, {"own main", ws[twMain]}, {"nothing left to cast", tapPosition(t)}} {
+		d    *decision.Decision // nil: e's pending decision
+	}{{"own main, G and W floating", floating, nil}, {"own main", ws[twMain], nil}, {"nothing left to cast", tapPosition(t), nil},
+		{"nothing left to cast, a land play offered", landPos, nil},
+		{"nothing left to cast, a land play offered, a dropped cast option first", landPos, &renumbered}} {
 		e := tc.e
-		d := e.Pending()
+		d := tc.d
+		if d == nil {
+			d = e.Pending()
+		}
 		r := newTrickRule("")
 		kept, back, dropped, ok := r.keptPriority(e, d)
 		if !ok || len(dropped) == 0 {
@@ -127,15 +165,92 @@ func TestTricksTapAnswer(t *testing.T) {
 		if asked != 1 {
 			t.Fatalf("%s: the bot asked %d times", tc.name, asked)
 		}
-		if tc.e == floating && back[keptIndex("pass")] == keptIndex("pass") {
+		if (tc.e == floating || tc.d != nil) && back[keptIndex("pass")] == keptIndex("pass") {
 			t.Fatalf("%s: the kept decision is not renumbered (pass at %d in both)", tc.name, keptIndex("pass"))
 		}
-		// A mana activation: it stands with a cast left, pass without.
-		want := pass
-		if left {
-			want = decision.Intent{Seq: d.Seq, Player: d.Player, Choices: []int{back[keptIndex("activate")]}}
+		// A mana activation: it stands with a cast left. With nothing left
+		// the bot is asked once more, over the kept decision without its mana
+		// activations, and that answer is mapped back through both index
+		// maps: pass, the land drop; a failure plays pass.
+		without, wback := withoutActivations(kept)
+		for i, k := range wback {
+			wback[i] = back[k]
 		}
-		check("a tap asked again", reply(keptIndex("activate")), want)
+		withoutIndex := func(kind string) int {
+			for i, o := range without.Options {
+				if o.Kind == kind {
+					return i
+				}
+			}
+			t.Fatalf("%s: no %s option kept without the activations", tc.name, kind)
+			return -1
+		}
+		// tapThen answers the tap first, then (over the decision without
+		// activations, checked) the answer second gives.
+		tapThen := func(second func(decision.Decision) (decision.Intent, error)) func(botpolicy.Board, decision.Decision) (decision.Intent, error) {
+			asks := 0
+			return func(b botpolicy.Board, k decision.Decision) (decision.Intent, error) {
+				asks++
+				switch asks {
+				case 1:
+					return decision.Intent{Seq: k.Seq, Player: k.Player, Choices: []int{keptIndex("activate")}}, nil
+				case 2:
+					if left {
+						t.Fatalf("%s: the bot asked a second time with a cast left", tc.name)
+					}
+					// The same marked board: the dropped cards uncastable.
+					for _, id := range dropped {
+						if c, have := b.Cards.Lookup(id); have && c.Castable {
+							t.Fatalf("%s: the second ask's board calls the dropped %s castable", tc.name, cardName(e, id))
+						}
+					}
+					if !reflect.DeepEqual(k.Options, without.Options) || !reflect.DeepEqual(k.PaymentActions, without.PaymentActions) {
+						t.Fatalf("%s: the second ask was over %d options and %d payment actions, want the kept decision's without its activations (%d, %d)",
+							tc.name, len(k.Options), len(k.PaymentActions), len(without.Options), len(without.PaymentActions))
+					}
+					return second(k)
+				}
+				t.Fatalf("%s: the bot asked %d times", tc.name, asks)
+				return decision.Intent{}, nil
+			}
+		}
+		answer := func(c ...int) func(decision.Decision) (decision.Intent, error) {
+			return func(k decision.Decision) (decision.Intent, error) {
+				return decision.Intent{Seq: k.Seq, Player: k.Player, Choices: c}, nil
+			}
+		}
+		if left {
+			check("a tap asked again", tapThen(nil), decision.Intent{Seq: d.Seq, Player: d.Player, Choices: []int{back[keptIndex("activate")]}})
+		} else {
+			check("a tap asked again, then pass", tapThen(answer(withoutIndex("pass"))), pass)
+			if wback[withoutIndex("pass")] != pass.Choices[0] {
+				t.Fatalf("%s: pass maps to %d, want %d", tc.name, wback[withoutIndex("pass")], pass.Choices[0])
+			}
+			// An error with an answer that is no pass (the land play where one
+			// is offered): pass all the same.
+			other := withoutIndex("pass")
+			for i, o := range without.Options {
+				if o.Kind != "pass" && (o.Kind == "play_land" || without.Options[other].Kind == "pass") {
+					other = i
+				}
+			}
+			check("a tap asked again, then an error", tapThen(func(k decision.Decision) (decision.Intent, error) {
+				return decision.Intent{Seq: k.Seq, Player: k.Player, Choices: []int{other}}, errors.New("no answer")
+			}), pass)
+			check("a tap asked again, then an index past the options", tapThen(answer(len(without.Options))), pass)
+			check("a tap asked again, then a negative index", tapThen(answer(-1)), pass)
+			if optionOf(d, "play_land") >= 0 {
+				land := decision.Intent{Seq: d.Seq, Player: d.Player, Choices: []int{wback[withoutIndex("play_land")]}}
+				if priorityBase(d, land) != BasePlayLand {
+					t.Fatalf("%s: the land play maps to %s", tc.name, CandidateLabel(d, land))
+				}
+				check("a tap asked again, then the land drop", tapThen(answer(withoutIndex("play_land"))), land)
+			}
+		}
+		// A land play asked again stands, whatever is left.
+		if optionOf(d, "play_land") >= 0 {
+			check("a land play asked again", reply(keptIndex("play_land")), decision.Intent{Seq: d.Seq, Player: d.Player, Choices: []int{back[keptIndex("play_land")]}})
+		}
 		// A kept payment cast.
 		if len(kept.PaymentActions) > 0 {
 			a := kept.PaymentActions[0]
@@ -163,7 +278,7 @@ func TestTricksTapAnswer(t *testing.T) {
 			t.Fatalf("%s, Sure Strike listed alone: a tap answered %+v (ok %v)", tc.name, got, ok)
 		}
 		t.Logf("%s: %d options, %d kept, %d payment actions kept, dropped %d, a cast left %v", tc.name, len(d.Options), len(kept.Options), len(kept.PaymentActions), len(dropped), left)
-		if nothing := tc.name == "nothing left to cast"; left == nothing {
+		if nothing := strings.HasPrefix(tc.name, "nothing left to cast"); left == nothing {
 			t.Fatalf("%s: a cast left %v", tc.name, left)
 		}
 	}
@@ -202,6 +317,8 @@ func TestTricksCastLeft(t *testing.T) {
 		{"a cast option", e, d, decision.Decision{Options: []decision.Option{{Kind: "cast", Obj: gg}}}, true},
 		{"a Foretell option", e, d, decision.Decision{Options: []decision.Option{{Kind: "cast", Obj: gg, Mode: "foretell"}}}, false},
 		{"a pass and a mana activation", e, d, decision.Decision{Options: []decision.Option{{Kind: "pass"}, {Index: 1, Kind: "activate"}}}, false},
+		{"an ability and a land play", e, d, decision.Decision{Options: []decision.Option{{Kind: "pass"}, {Index: 1, Kind: "activate"},
+			{Index: 2, Kind: "ability", Obj: gg}, {Index: 3, Kind: "play_land", Obj: gg}}}, false},
 		{"mana floating", floating, fd, decision.Decision{}, true},
 		{"no payment census", e, &unbuilt, decision.Decision{}, true},
 	} {
@@ -377,5 +494,201 @@ func TestTricksRootReasksABotTap(t *testing.T) {
 		}); !ok || !reflect.DeepEqual(got, passOf(t, &qd)) {
 			t.Fatalf("the default list: the bot's tap answered %s (ok %v), want pass", CandidateLabel(&qd, got), ok)
 		}
+	}
+}
+
+// The seat's root at tapLandPosition (nothing left to cast, a land play
+// offered; the verifier's v3probe: the bot asked again there passed, so the
+// seat passed and its main phase ended without the land drop at all 36 such
+// positions of playTricks' games):
+//
+//   - with :tricks (also with :holdupkeep), the bot asked again taps again
+//     with nothing left, is asked once more without its mana activations,
+//     and its land drop is played (TricksTap 1); the prior-only seat plays
+//     it too;
+//   - with the rule dropping nothing (Sure Strike listed alone) or off, the
+//     tap goes to the backstop, whose land drop comes first (LandFirst 1):
+//     the same land, unsearched;
+//   - a seat with Sims 0 plays its bot's tap, the rule unapplied.
+func TestTricksRootPlaysTheLandDropOverATap(t *testing.T) {
+	e := tapLandPosition(t)
+	d := *e.Pending()
+	b := botpolicy.BoardFromGame(e.G, e, d.Player)
+	ctx := context.Background()
+	tap, err := tapSeat(t, true, false, false, "").def.DecideBoard(ctx, b, d)
+	if err != nil || priorityBase(&d, tap) != BaseActivate {
+		t.Fatalf("the seat's bot answered %+v (%v), want a tap", tap, err)
+	}
+	// The bot's land drop: its answer over the decision without activations.
+	without, back := withoutActivations(d)
+	asked, _ := tapSeat(t, true, false, false, "").def.DecideBoard(ctx, b, without)
+	land, ok := mapBack(asked, back)
+	if !ok || priorityBase(&d, land) != BasePlayLand {
+		t.Fatalf("the bot without its activations answered %s, want a land play", CandidateLabel(&d, land))
+	}
+	for _, tc := range []struct {
+		name                string
+		tricks, hold, prior bool
+		cards               string
+		tapped, landFirst   int
+	}{
+		{"tricks", true, false, false, "", 1, 0},
+		{"tricks and holdupkeep", true, true, false, "", 1, 0},
+		{"the prior-only seat", true, false, true, "", 0, 0}, // no Diag below two candidates
+		{"Sure Strike listed alone", true, false, false, nSureStrike, 0, 1},
+		{"tricks off", false, false, false, "", 0, 1},
+	} {
+		diags := watchDiags(t)
+		in, err := tapSeat(t, tc.tricks, tc.hold, tc.prior, tc.cards).DecideSearch(ctx, searchseat.Env{Engine: e, Board: b}, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var st Stats
+		for _, dg := range *diags {
+			st.Add(dg.Stats)
+		}
+		if !reflect.DeepEqual(in, land) || st.TricksTap != tc.tapped || st.LandFirst != tc.landFirst || st.Searched != 0 || st.BotTapRerooted != 0 {
+			t.Fatalf("%s: played %s (tricks tap %d, land first %d, searched %d, tap rerooted %d), want the land drop %s (tricks tap %d, land first %d)",
+				tc.name, CandidateLabel(&d, in), st.TricksTap, st.LandFirst, st.Searched, st.BotTapRerooted, CandidateLabel(&d, land), tc.tapped, tc.landFirst)
+		}
+	}
+	// Sims 0: no Search, the bot's tap as it answered.
+	for _, at := range []struct {
+		name string
+		e    *rules.Engine
+	}{{"a land play offered", e}, {"nothing left to cast", tapPosition(t)}} {
+		sc := DefaultSeatConfig()
+		sc.Search.AutoPayment, sc.Search.Sims, sc.Source, sc.Search.Tricks = true, 0, testSeatSource, true
+		s, err := NewSeat(5, nil, sc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ad := *at.e.Pending()
+		ab := botpolicy.BoardFromGame(at.e.G, at.e, ad.Player)
+		want, _ := s.def.DecideBoard(ctx, ab, ad)
+		in, err := s.DecideSearch(ctx, searchseat.Env{Engine: at.e, Board: ab}, ad)
+		if err != nil || !reflect.DeepEqual(in, want) || priorityBase(&ad, in) != BaseActivate {
+			t.Fatalf("Sims 0, %s: played %s (%v), want the bot's tap %s", at.name, CandidateLabel(&ad, in), err, CandidateLabel(&ad, want))
+		}
+	}
+}
+
+// The tap is asked of the seat's own wrapped bot (Seat.def), the auto-pay
+// bot under AutoPayment: at its own main phase, the rule dropping the gated
+// casts and keeping Goblin Surprise's planned cast, a tap is answered by what
+// that bot answers over the kept decision on the marked board (the planned
+// cast, or the land drop: no tap), where a plain manual bot would tap again.
+func TestTricksRootTapAsksTheSeatsBot(t *testing.T) {
+	ctx := context.Background()
+	e := trickWindows(t)[twMain]
+	d := *e.Pending()
+	tap := decision.Intent{Seq: d.Seq, Player: d.Player, Choices: []int{optionOf(&d, "activate")}}
+	if tap.Choices[0] < 0 {
+		t.Fatal("own main: no mana activation offered")
+	}
+	r := newTrickRule("")
+	kept, back, dropped, ok := r.keptPriority(e, &d)
+	if !ok {
+		t.Fatal("own main: the rule drops nothing")
+	}
+	marked := func() botpolicy.Board {
+		b := botpolicy.BoardFromGame(e.G, e, d.Player)
+		uncastable(b, dropped)
+		return b
+	}
+	s := tapSeat(t, true, false, false, "")
+	want, _ := s.def.DecideBoard(ctx, marked(), kept)
+	want, _ = mapBack(want, back)
+	manual, _ := seat.NewBot(5).DecideBoard(ctx, marked(), kept)
+	manual, _ = mapBack(manual, back)
+	if priorityBase(&d, want) == BaseActivate || priorityBase(&d, manual) != BaseActivate {
+		t.Fatalf("own main: the auto-pay bot asked again answers %s and a manual bot %s; want no tap and a tap", CandidateLabel(&d, want), CandidateLabel(&d, manual))
+	}
+	got, tapped := s.trickTap(ctx, e, &d, tap)
+	if !tapped || !reflect.DeepEqual(got, want) {
+		t.Fatalf("own main: the seat's tap answered %s (tapped %v), want its bot's %s", CandidateLabel(&d, got), tapped, CandidateLabel(&d, want))
+	}
+	t.Logf("own main: the seat's tap answered %s (a manual bot: %s)", CandidateLabel(&d, got), CandidateLabel(&d, manual))
+}
+
+// The prior-only seat counts a replaced tap (Stats.TricksTap) at a root it
+// reports, one with two or more candidates: own main, the answer trickTap
+// left searched over pass, Goblin Surprise and the other kept casts.
+func TestTricksPriorSeatCountsAReplacedTap(t *testing.T) {
+	ctx := context.Background()
+	e := trickWindows(t)[twMain]
+	d := *e.Pending()
+	b := botpolicy.BoardFromGame(e.G, e, d.Player)
+	for _, tapped := range []bool{true, false} {
+		diags := watchDiags(t)
+		if _, err := tapSeat(t, true, false, true, "").decidePrior(ctx, searchseat.Env{Engine: e, Board: b}, d, passOf(t, &d), tapped); err != nil {
+			t.Fatal(err)
+		}
+		want := map[bool]int{true: 1, false: 0}[tapped]
+		if len(*diags) != 1 || (*diags)[0].Candidates < 2 || (*diags)[0].Stats.TricksTap != want {
+			t.Fatalf("tapped %v: diags %+v, want one root of two or more candidates with TricksTap %d", tapped, *diags, want)
+		}
+	}
+}
+
+// Options.Tricks' reroot of a dropped bot cast plays the bot's land drop
+// first, as the bot-tap backstop does: at its own main phase with a land
+// play offered, a bot answer of Giant Growth (outside its windows) is
+// replaced by the land the bot plays when asked again without its mana
+// activations (Root.BotAsk; LandFirst and TricksBot 1, unsearched). Without
+// BotAsk it is rerooted as before; the prior-only seat plays the land too.
+func TestTricksRerootPlaysTheLandDropFirst(t *testing.T) {
+	ctx := context.Background()
+	e := trickPosition(t, "seat 0's own main phase with a land play offered and Giant Growth castable", 0,
+		func(e *rules.Engine, d *decision.Decision, _ decision.Intent) bool {
+			return e.G.Active == 0 && e.G.Step.IsMain() && len(e.G.Stack) == 0 && optionOf(d, "play_land") >= 0 && optionOf(d, "pass") >= 0 &&
+				castableNames(e, d)[nGiantGrowth]
+		})
+	d := e.Pending()
+	gg := payCastOf(t, e, d, nGiantGrowth)
+	bot := seat.NewBot(5).EnableAutoPayMana()
+	ask := func(k decision.Decision) (decision.Intent, error) {
+		return bot.DecideBoard(ctx, botpolicy.BoardFromGame(e.G, e, d.Player), k)
+	}
+	land, ok := botLandDrop(d, ask)
+	if !ok {
+		t.Fatal("the bot plays no land when asked without its activations")
+	}
+	for _, hold := range []bool{false, true} {
+		for _, withAsk := range []bool{true, false} {
+			c := e.Clone()
+			cd := c.Pending()
+			obs := searchprobe.NewCollector(cd.Player)
+			src, _ := newTestClairvoyant(c, obs)
+			opts := DefaultOptions()
+			opts.Sims, opts.AutoPayment, opts.Tricks, opts.HoldUpkeep = 8, true, true, hold
+			root := Root{Engine: c, Decision: cd, Bot: gg, Observer: obs}
+			if withAsk {
+				root.BotAsk = ask
+			}
+			res, err := Search(ctx, root, src, nil, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Stats.TricksBot != 1 || castName(c, cd, res.Intent) == nGiantGrowth {
+				t.Fatalf("hold %v, BotAsk %v: played %s, tricks bot %d", hold, withAsk, CandidateLabel(cd, res.Intent), res.Stats.TricksBot)
+			}
+			if withAsk {
+				if !reflect.DeepEqual(res.Intent, land) || res.Stats.LandFirst != 1 || res.Stats.Searched != 0 || res.NoBot {
+					t.Fatalf("hold %v: played %s, land first %d, searched %d, no bot %v; want the land drop unsearched",
+						hold, CandidateLabel(cd, res.Intent), res.Stats.LandFirst, res.Stats.Searched, res.NoBot)
+				}
+				continue
+			}
+			if res.Stats.LandFirst != 0 || priorityBase(cd, res.Intent) == BasePlayLand {
+				t.Fatalf("hold %v, no BotAsk: played %s, land first %d; want the reroot as before", hold, CandidateLabel(cd, res.Intent), res.Stats.LandFirst)
+			}
+		}
+	}
+	// The prior-only seat, Giant Growth its bot's answer.
+	s := tapSeat(t, true, false, true, "")
+	in, err := s.decidePrior(ctx, searchseat.Env{Engine: e, Board: botpolicy.BoardFromGame(e.G, e, d.Player)}, *d, gg, false)
+	if err != nil || !reflect.DeepEqual(in, land) {
+		t.Fatalf("the prior-only seat played %s (%v), want the land drop %s", CandidateLabel(d, in), err, CandidateLabel(d, land))
 	}
 }

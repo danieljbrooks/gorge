@@ -243,13 +243,6 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 	if kinds.Choose {
 		kinds.chooseMax = opts.Limit
 	}
-	// A reroot plays the bot's land drop first (Root.BotAsk): the root then
-	// holds the land play as the bot's answer and is skipped, as every root
-	// whose bot plays a land is (Stats.LandFirst).
-	if root.landFirst(opts.AutoPayment, kinds) {
-		res.Intent = root.Bot
-		res.Stats.LandFirst = 1
-	}
 	// HoldUpkeep's rule rides on the kinds every enumeration reads: the
 	// root's here, the walk's through walkConfig.kinds.
 	if opts.HoldUpkeep {
@@ -272,6 +265,18 @@ func Search(ctx context.Context, root Root, src WorldSource, net *policynet.Mode
 	trickIn, trickDropped := kinds.tricks.answer(root.Engine, root.Decision, heldIn)
 	if trickDropped && !kinds.hold.on(root.Engine, root.Decision) {
 		root.NoBot = true
+	}
+	// A reroot -- the seat's bot-tap backstop, or Tricks' above -- plays the
+	// bot's land drop first (Root.BotAsk): the root then holds the land play
+	// as the bot's answer and is skipped, as every root whose bot plays a
+	// land is (Stats.LandFirst). Under Tricks the land is the rule's answer
+	// in place of the dropped cast.
+	if root.landFirst(opts.AutoPayment, kinds) {
+		res.Intent = root.Bot
+		res.Stats.LandFirst = 1
+		if trickDropped {
+			trickIn = root.Bot
+		}
 	}
 	cands, kind, why, ok, cut, botFound := rootCands(root.Observer, root, kinds, limit, opts.AutoPayment, &enumBoard)
 	res.Kind = kind

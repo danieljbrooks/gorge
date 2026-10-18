@@ -180,6 +180,26 @@ func (a *azAgg) tapSummary(sum map[string]any) {
 	sum["az_land_first"] = a.landFirst.Load()
 }
 
+// tricksSummary is :tricks' part of play's summary.
+func (a *azAgg) tricksSummary(sum map[string]any) {
+	// :tricks: root decisions at which the timing gate dropped a gated card's cast or mode
+	// (azmcts Stats.TricksGated) and at which a side check dropped a cast or a target (TricksSide),
+	// searched over what was left or played as the bot's answer; the roots whose bot answer the rule
+	// dropped and replaced (TricksBot): a priority root with :autopay outside :holdupkeep's window
+	// searched over what was left with no bot candidate (pass played when it is all that is left, the
+	// bot's land drop first where it has one), else pass or the first kept targets or modes; the roots
+	// whose bot answer, a mana tap where the rule drops a cast, it replaced by the bot's answer asked
+	// again (once more without its mana taps where nothing is left to cast) or by pass (TricksTap); and the
+	// in-walk decisions it changed, the searching seat's and a mirrored opponent's (TricksWalk,
+	// TricksOpp; walk work).
+	sum["az_tricks_gated_roots"] = a.tricksGated.Load()
+	sum["az_tricks_side_roots"] = a.tricksSide.Load()
+	sum["az_tricks_bot_replaced"] = a.tricksBot.Load()
+	sum["az_tricks_tap_replaced"] = a.tricksTap.Load()
+	sum["az_tricks_walk"] = a.tricksWalk.Load()
+	sum["az_tricks_opp"] = a.tricksOpp.Load()
+}
+
 // refusals counts redeal refusals and deal failures by reason (-out summary).
 var refusals struct {
 	sync.Mutex
@@ -673,21 +693,7 @@ func runPlay(args []string) int {
 		sum["az_holdupkeep_opp"] = azStats.heldUpkeepOpp.Load()
 	}
 	if specs[0].Tricks || specs[1].Tricks {
-		// :tricks: root decisions at which the timing gate dropped a gated card's cast or mode
-		// (azmcts Stats.TricksGated) and at which a side check dropped a cast or a target (TricksSide),
-		// searched over what was left or played as the bot's answer; the roots whose bot answer the rule
-		// dropped and replaced (TricksBot): a priority root with :autopay outside :holdupkeep's window
-		// searched over what was left with no bot candidate (pass played when it is all that is left),
-		// else pass or the first kept targets or modes; the roots whose bot answer, a mana tap where the
-		// rule drops a cast, it replaced by the bot's answer asked again or by pass (TricksTap); and the
-		// in-walk decisions it changed, the searching seat's and a mirrored opponent's (TricksWalk,
-		// TricksOpp; walk work).
-		sum["az_tricks_gated_roots"] = azStats.tricksGated.Load()
-		sum["az_tricks_side_roots"] = azStats.tricksSide.Load()
-		sum["az_tricks_bot_replaced"] = azStats.tricksBot.Load()
-		sum["az_tricks_tap_replaced"] = azStats.tricksTap.Load()
-		sum["az_tricks_walk"] = azStats.tricksWalk.Load()
-		sum["az_tricks_opp"] = azStats.tricksOpp.Load()
+		azStats.tricksSummary(sum)
 	}
 	if specs[0].PCR > 0 || specs[1].PCR > 0 {
 		// :pcr=: searched decisions by side that playout-cap randomization made full (recorded)

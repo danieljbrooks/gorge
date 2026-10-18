@@ -333,14 +333,17 @@ type Options struct {
 	// priority root under AutoPayment (priority searched) outside HoldUpkeep's
 	// window, a search of what the rule leaves with no bot candidate (as under
 	// Root.NoBot; pass, the one candidate left, is played when fewer than two
-	// are); at a priority decision in the walk outside that window, the walk bot
+	// are; the bot's land drop first where it has one, Root.BotAsk); at a
+	// priority decision in the walk outside that window, the walk bot
 	// asked again over what the rule keeps; anywhere else pass (a priority
 	// decision) or the first kept options (a target or modes decision). A
 	// seat's bot answer that taps mana by hand where the rule drops a cast is
 	// asked of the bot again over what the rule keeps, the dropped cards
-	// uncastable to it, and pass is played when that fails or the answer is
-	// still a tap with nothing left to cast (Seat.DecideSearch,
-	// trickRule.tapAnswer); the walk's own taps are played as answered.
+	// uncastable to it; an answer that still taps with nothing left to cast is
+	// asked once more without the mana activations (the bot's land drop, an
+	// ability or pass), and pass is played when an ask fails
+	// (Seat.DecideSearch, trickRule.tapAnswer); the walk's own taps are played
+	// as answered.
 	// Stats.TricksGated and TricksSide count the roots it changed, TricksBot the
 	// replaced bot answers there, TricksTap the replaced taps, TricksWalk and
 	// TricksOpp the in-walk decisions. It composes with HoldUpkeep (each drops
@@ -568,8 +571,9 @@ type Stats struct {
 	// a replaced walk-bot answer), walk work like HeldUpkeepWalk. TricksTap
 	// counts the seat's roots (0 or 1 per decision, set by the seat, not
 	// Search) whose bot answer, a mana tap at a decision where the rule drops
-	// a cast, it replaced: the bot asked again answered otherwise, or pass was
-	// played (trickRule.tapAnswer). All stay 0 with the option off.
+	// a cast, it replaced: the bot asked again (once more without its mana
+	// activations where nothing is left to cast) answered otherwise, or pass
+	// was played (trickRule.tapAnswer). All stay 0 with the option off.
 	TricksGated int
 	TricksSide  int
 	TricksBot   int

@@ -71,9 +71,10 @@ const DefaultTricks = "Giant Growth|Sure Strike|Bulk Up|Claws Out|Goblin Surpris
 // A seat's bot answer that taps mana by hand is no cast the rule drops, but
 // it may be aimed at one: at a priority root where the rule drops a cast the
 // seat asks its bot again over what the rule keeps, the dropped cards
-// uncastable to it, and plays pass when that fails or the answer still taps
-// with nothing left to cast (tapAnswer, Seat.DecideSearch). The walk's own
-// taps are played as answered.
+// uncastable to it; where the answer still taps with nothing left to cast it
+// asks once more without the mana activations (its land drop, an ability or
+// pass), and plays pass when an ask fails (tapAnswer, Seat.DecideSearch).
+// The walk's own taps are played as answered.
 //
 // Search hangs the rule on its Kinds (Kinds.tricks) as it does
 // HoldUpkeep's; an opponent's in-walk points use it only under
@@ -708,15 +709,19 @@ func castLeft(e *rules.Engine, d *decision.Decision, kept *decision.Decision) bo
 // to nothing and the seat's lands would be tapped through its windows. The
 // bot the tap came from (ask) is asked again, as the walk asks its walk bot
 // (engineEnv.reask): over the decision the rule keeps, on a board built from
-// e with the dropped cards uncastable, its answer mapped back onto d. Pass is
-// played in its place when that fails (ask's error, an index the kept
-// decision does not have), or when the answer is still a mana activation and
-// no cast is left (castLeft): its mana could then pay only a cast the rule
-// drops, or none (the tap gate also taps toward a card the engine offers no
-// cast of, one with no legal target). ok is false, and in stands, when in is
-// no mana activation, d no priority decision, the rule drops nothing at d, or
-// d offers no pass. The answer may be in itself (a tap aimed at a kept
-// spell), and it records nothing.
+// e with the dropped cards uncastable, its answer mapped back onto d. When
+// that answer is still a mana activation and no cast is left (castLeft) --
+// its mana could then pay only a cast the rule drops, or none (the tap gate
+// also taps toward a card the engine offers no cast of, one with no legal
+// target) -- the bot is asked once more, over the kept decision without its
+// mana activations (withoutActivations, as the land drop before a reroot
+// asks it), its answer mapped back through both index maps: the bot's tap
+// gate runs before its land drop, so this is where its land drop, an ability
+// or pass comes from. Pass is played in its place when an ask fails (ask's
+// error, an index the decision it was asked over does not have). ok is
+// false, and in stands, when in is no mana activation, d no priority
+// decision, the rule drops nothing at d, or d offers no pass. The answer may
+// be in itself (a tap aimed at a kept spell), and it records nothing.
 func (r *trickRule) tapAnswer(e *rules.Engine, d *decision.Decision, in decision.Intent,
 	ask func(botpolicy.Board, decision.Decision) (decision.Intent, error)) (decision.Intent, bool) {
 	if r == nil || e == nil || d == nil || d.Kind != decision.KPriority || priorityBase(d, in) != BaseActivate {
@@ -732,7 +737,17 @@ func (r *trickRule) tapAnswer(e *rules.Engine, d *decision.Decision, in decision
 	if err == nil {
 		again, ok = mapBack(again, back)
 	}
-	if err != nil || !ok || priorityBase(d, again) == BaseActivate && !castLeft(e, d, &kept) {
+	if err == nil && ok && priorityBase(d, again) == BaseActivate && !castLeft(e, d, &kept) {
+		without, wback := withoutActivations(kept)
+		for i, k := range wback {
+			wback[i] = back[k] // the kept decision's index, then d's
+		}
+		again, err = ask(b, without)
+		if err == nil {
+			again, ok = mapBack(again, wback)
+		}
+	}
+	if err != nil || !ok {
 		if pass, ok := passAnswer(d); ok {
 			return pass, true
 		}

@@ -104,13 +104,15 @@ import (
 //	                             simulation, and with :oppnodes:oppfull at the opponent's too. A bot cast the
 //	                             rule drops at a root is never searched: with :autopay the root is searched
 //	                             over what is left with no bot candidate (as the bot-tap reroute; -declog's
-//	                             rerooted), pass played when it is all that is left; pass in :holdupkeep's
+//	                             rerooted), pass played when it is all that is left, the bot's land drop
+//	                             first where it has one (as the bot-tap reroute); pass in :holdupkeep's
 //	                             own upkeep and draw window and without :autopay. Inside a
 //	                             simulation the bot is asked again over what the rule keeps; a dropped
 //	                             target or mode is replaced by the first kept ones. A root's bot answer
 //	                             that taps mana by hand where the rule drops a cast is asked of the bot
-//	                             again over what the rule keeps (the dropped cards uncastable to it), pass
-//	                             played when it still taps with nothing left to cast. Composes with
+//	                             again over what the rule keeps (the dropped cards uncastable to it); when
+//	                             it still taps with nothing left to cast, once more without its mana taps
+//	                             (its land drop, or pass), pass played when an ask fails. Composes with
 //	                             :holdupkeep. Not applied where the seat does not search: its fallbacks
 //	                             when the observation feed stops or a root is refused, sims=0, and an
 //	                             opponent without :oppfull inside simulations. play's summary counts the
