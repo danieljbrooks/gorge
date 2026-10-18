@@ -72,8 +72,12 @@ func optionOf(d *decision.Decision, kind string) int {
 //     was, and its answer is mapped back onto the decision: pass, a mana
 //     activation, a kept payment cast;
 //   - its error, or an index the kept decision does not have, plays pass;
-//   - a tap with nothing left to cast plays pass; with a cast left (a kept
-//     payment action, a floating pool) it stands;
+//   - a tap with nothing left to cast: the bot is asked once more, over the
+//     kept decision without its mana activations, and its pass, land drop
+//     or ability is mapped back through both index maps and played (the
+//     ability where tapLandPosition's renumbered decision also offers one
+//     last); a failure there plays pass. With a cast left (a kept payment
+//     action, a floating pool) the tap stands;
 //   - an answer that is no tap, or a decision where the rule drops nothing,
 //     is left alone and the bot is not asked.
 func TestTricksTapAnswer(t *testing.T) {
@@ -96,13 +100,23 @@ func TestTricksTapAnswer(t *testing.T) {
 		}
 		renumbered.Options = opts
 	}
+	// The same with an ability offered last, after the activations, so the
+	// ability's index differs in d, in the kept decision and without the
+	// activations.
+	withAbility := renumbered
+	{
+		prism := renumbered.Options[optionOf(&renumbered, "activate")].Obj
+		withAbility.Options = append(append([]decision.Option(nil), renumbered.Options...), decision.Option{
+			Index: len(renumbered.Options), Kind: "ability", Obj: prism, Player: renumbered.Player, Label: "Activate " + cardName(landPos, prism) + " (an ability)"})
+	}
 	for _, tc := range []struct {
 		name string
 		e    *rules.Engine
 		d    *decision.Decision // nil: e's pending decision
 	}{{"own main, G and W floating", floating, nil}, {"own main", ws[twMain], nil}, {"nothing left to cast", tapPosition(t), nil},
 		{"nothing left to cast, a land play offered", landPos, nil},
-		{"nothing left to cast, a land play offered, a dropped cast option first", landPos, &renumbered}} {
+		{"nothing left to cast, a land play offered, a dropped cast option first", landPos, &renumbered},
+		{"nothing left to cast, a land play offered, a dropped cast option first and an ability last", landPos, &withAbility}} {
 		e := tc.e
 		d := tc.d
 		if d == nil {
@@ -245,6 +259,18 @@ func TestTricksTapAnswer(t *testing.T) {
 					t.Fatalf("%s: the land play maps to %s", tc.name, CandidateLabel(d, land))
 				}
 				check("a tap asked again, then the land drop", tapThen(answer(withoutIndex("play_land"))), land)
+			}
+			// The second ask answers the ability, as found in the decision it
+			// is asked over: mapped back through both maps, d's own ability is
+			// played.
+			if a := optionOf(d, "ability"); a >= 0 {
+				ability := decision.Intent{Seq: d.Seq, Player: d.Player, Choices: []int{a}}
+				check("a tap asked again, then an ability", tapThen(func(k decision.Decision) (decision.Intent, error) {
+					return decision.Intent{Seq: k.Seq, Player: k.Player, Choices: []int{optionOf(&k, "ability")}}, nil
+				}), ability)
+				if wi, ki := withoutIndex("ability"), keptIndex("ability"); wi == ki || ki == a || priorityBase(d, ability) != BaseAbility {
+					t.Fatalf("%s: the ability at %d without the activations, %d kept, %d in d: want it renumbered by both maps", tc.name, wi, ki, a)
+				}
 			}
 		}
 		// A land play asked again stands, whatever is left.
@@ -508,7 +534,8 @@ func TestTricksRootReasksABotTap(t *testing.T) {
 //     it too;
 //   - with the rule dropping nothing (Sure Strike listed alone) or off, the
 //     tap goes to the backstop, whose land drop comes first (LandFirst 1):
-//     the same land, unsearched;
+//     the same land, unsearched, and no replaced bot answer (TricksBot 0,
+//     as on every row);
 //   - a seat with Sims 0 plays its bot's tap, the rule unapplied.
 func TestTricksRootPlaysTheLandDropOverATap(t *testing.T) {
 	e := tapLandPosition(t)
@@ -547,9 +574,12 @@ func TestTricksRootPlaysTheLandDropOverATap(t *testing.T) {
 		for _, dg := range *diags {
 			st.Add(dg.Stats)
 		}
-		if !reflect.DeepEqual(in, land) || st.TricksTap != tc.tapped || st.LandFirst != tc.landFirst || st.Searched != 0 || st.BotTapRerooted != 0 {
-			t.Fatalf("%s: played %s (tricks tap %d, land first %d, searched %d, tap rerooted %d), want the land drop %s (tricks tap %d, land first %d)",
-				tc.name, CandidateLabel(&d, in), st.TricksTap, st.LandFirst, st.Searched, st.BotTapRerooted, CandidateLabel(&d, land), tc.tapped, tc.landFirst)
+		// TricksBot stays 0 on every row: the rule never replaced the root's
+		// bot answer (the tap, or the land drop trickTap left), and where it
+		// drops nothing the backstop's land drop is no replacement of its.
+		if !reflect.DeepEqual(in, land) || st.TricksTap != tc.tapped || st.LandFirst != tc.landFirst || st.Searched != 0 || st.BotTapRerooted != 0 || st.TricksBot != 0 {
+			t.Fatalf("%s: played %s (tricks tap %d, land first %d, searched %d, tap rerooted %d, tricks bot %d), want the land drop %s (tricks tap %d, land first %d, tricks bot 0)",
+				tc.name, CandidateLabel(&d, in), st.TricksTap, st.LandFirst, st.Searched, st.BotTapRerooted, st.TricksBot, CandidateLabel(&d, land), tc.tapped, tc.landFirst)
 		}
 	}
 	// Sims 0: no Search, the bot's tap as it answered.
@@ -690,5 +720,69 @@ func TestTricksRerootPlaysTheLandDropFirst(t *testing.T) {
 	in, err := s.decidePrior(ctx, searchseat.Env{Engine: e, Board: botpolicy.BoardFromGame(e.G, e, d.Player)}, *d, gg, false)
 	if err != nil || !reflect.DeepEqual(in, land) {
 		t.Fatalf("the prior-only seat played %s (%v), want the land drop %s", CandidateLabel(d, in), err, CandidateLabel(d, land))
+	}
+}
+
+// The land :tricks' reroot and the backstop play first is the bot's own
+// choice, read from the seat's board (Root.BotAsk over env.Board): at
+// colourLandWindow with Giant Growth as the green card (an Island and a
+// Forest offered, the Island first, Giant Growth's {G} unmet), where a bot
+// that reads no board plays the first land offered, the Island:
+//
+//   - the prior-only seat (decidePrior), its bot's answer Giant Growth's
+//     cast outside its windows (the cast option added: the auto-pay bot
+//     itself plays a land before any cast): the rule reroots it and plays
+//     the Forest, with :holdupkeep too;
+//   - DecideSearch with :tricks (also with :holdupkeep), its bot tapping by
+//     hand toward a Bear: the backstop plays the Forest unsearched
+//     (LandFirst 1), no replaced bot answer (TricksBot 0).
+func TestTricksPlaysTheBotsColourLandFirst(t *testing.T) {
+	ctx := context.Background()
+	e := colourLandWindow(t, payWindowCard(t, scriptGiantGrowth))
+	d := *e.Pending()
+	b := botpolicy.BoardFromGame(e.G, e, d.Player)
+	forest, island := lfLandPlay(e, &d, "Forest"), lfLandPlay(e, &d, "Island")
+	without, back := withoutActivations(d)
+	blind, err := tapSeat(t, true, false, false, "").def.DecideBoard(ctx, botpolicy.NewBoard(2), without)
+	if blind, ok := mapBack(blind, back); err != nil || !ok || !reflect.DeepEqual(blind, island) {
+		t.Fatalf("a bot reading no board answered %s (%v), want the first land offered, %s", CandidateLabel(&d, blind), err, CandidateLabel(&d, island))
+	}
+	var gg state.ObjID
+	for _, id := range e.G.Zone(state.ZHand, d.Player) {
+		if cardName(e, id) == nGiantGrowth {
+			gg = id
+		}
+	}
+	cd := d
+	cd.Options = append(append([]decision.Option(nil), d.Options...), decision.Option{
+		Index: len(d.Options), Kind: "cast", Obj: gg, Player: d.Player, Label: "Cast " + nGiantGrowth})
+	cast := decision.Intent{Seq: d.Seq, Player: d.Player, Choices: []int{len(d.Options)}}
+	for _, hold := range []bool{false, true} {
+		in, err := tapSeat(t, true, hold, true, "").decidePrior(ctx, searchseat.Env{Engine: e, Board: b}, cd, cast, false)
+		if err != nil || !reflect.DeepEqual(in, forest) {
+			t.Fatalf("the prior-only seat, holdupkeep %v, its bot casting Giant Growth: played %s (%v), want %s", hold, CandidateLabel(&cd, in), err, CandidateLabel(&d, forest))
+		}
+	}
+	for _, hold := range []bool{false, true} {
+		diags := watchDiags(t)
+		in, err := tapSeat(t, true, hold, false, "").DecideSearch(ctx, searchseat.Env{Engine: e, Board: b}, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var st Stats
+		for _, dg := range *diags {
+			st.Add(dg.Stats)
+		}
+		t.Logf("DecideSearch, holdupkeep %v: played %s (land first %d, tricks tap %d, tricks bot %d)", hold, CandidateLabel(&d, in), st.LandFirst, st.TricksTap, st.TricksBot)
+		if !reflect.DeepEqual(in, forest) || st.LandFirst != 1 || st.Searched != 0 || st.TricksBot != 0 {
+			t.Fatalf("DecideSearch, holdupkeep %v: played %s (land first %d, searched %d, tricks bot %d, tricks tap %d), want %s unsearched",
+				hold, CandidateLabel(&d, in), st.LandFirst, st.Searched, st.TricksBot, st.TricksTap, CandidateLabel(&d, forest))
+		}
+	}
+	if err := e.Submit(forest); err != nil {
+		t.Fatal(err)
+	}
+	if !lfInPlay(e.G, 0, "Forest") {
+		t.Fatal("no Forest in play after the land drop")
 	}
 }
