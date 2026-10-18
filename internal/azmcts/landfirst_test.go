@@ -75,8 +75,9 @@ func landTapWindow(t *testing.T) *rules.Engine {
 }
 
 // botLandDrop asks the bot over the decision without its mana activations
-// (renumbered, the payment actions kept) and maps its answer back; only a
-// land play is a land drop, and a decision with no land play offered is not
+// (renumbered, its abilities and payment actions kept) and maps its answer
+// back; only a land play is a land drop (not a payment answer, even one
+// naming a land's index), and a decision with no land play offered is not
 // asked.
 func TestBotLandDropAsksWithoutActivations(t *testing.T) {
 	d := decision.Decision{Seq: 9, Player: 1, Kind: decision.KPriority,
@@ -85,10 +86,10 @@ func TestBotLandDropAsksWithoutActivations(t *testing.T) {
 			{Index: 0, Kind: "activate", Label: "Tap A"}, {Index: 1, Kind: "activate", Label: "Tap B"},
 			{Index: 2, Kind: "play_land", Label: "Play Island"}, {Index: 3, Kind: "cast", Label: "Cast Bear"},
 			{Index: 4, Kind: "activate", Label: "Tap C"}, {Index: 5, Kind: "play_land", Label: "Play Forest"},
-			{Index: 6, Kind: "pass", Label: "Pass"},
+			{Index: 6, Kind: "pass", Label: "Pass"}, {Index: 7, Kind: "ability", Label: "Pump Bear"},
 		}}
 	without, back := withoutActivations(d)
-	if !reflect.DeepEqual(back, []int{2, 3, 5, 6}) || len(without.Options) != 4 || len(without.PaymentActions) != 1 || len(d.Options) != 7 {
+	if !reflect.DeepEqual(back, []int{2, 3, 5, 6, 7}) || len(without.Options) != 5 || len(without.PaymentActions) != 1 || len(d.Options) != 8 {
 		t.Fatalf("without activations: back %v, %d options, %d payment actions (the decision's own %d options)", back, len(without.Options), len(without.PaymentActions), len(d.Options))
 	}
 	for i, o := range without.Options {
@@ -117,10 +118,11 @@ func TestBotLandDropAsksWithoutActivations(t *testing.T) {
 		{"the second land", pick(2), nil, []int{5}},
 		{"a cast", pick(1), nil, nil},
 		{"pass", pick(3), nil, nil},
-		{"an index past the options", pick(4), nil, nil},
+		{"an ability", pick(4), nil, nil},
+		{"an index past the options", pick(5), nil, nil},
 		{"a negative index", pick(-1), nil, nil},
 		{"two options", pick(0, 2), nil, nil},
-		{"a payment", decision.Intent{Seq: 9, Player: 1, Payment: &decision.PaymentSelection{ActionID: "p"}}, nil, nil},
+		{"a payment", decision.Intent{Seq: 9, Player: 1, Choices: []int{0}, Payment: &decision.PaymentSelection{ActionID: "p"}}, nil, nil},
 		{"an error", pick(0), errors.New("no answer"), nil},
 	} {
 		asked = 0
@@ -365,5 +367,153 @@ func TestAZRerootWithoutALandUnchanged(t *testing.T) {
 	if !reflect.DeepEqual(in, want.Intent) || dg.Choice != want.Choice || dg.Candidates != len(want.Candidates) || !reflect.DeepEqual(dg.Stats, want.Stats) {
 		t.Fatalf("the seat's reroot: played %s, choice %d of %d, stats %+v; the backstop's: %s, choice %d of %d, stats %+v",
 			CandidateLabel(&d, in), dg.Choice, dg.Candidates, dg.Stats, CandidateLabel(&cd, want.Intent), want.Choice, len(want.Candidates), want.Stats)
+	}
+}
+
+// lfMapBack maps a one-choice answer over a renumbered decision back through
+// back (withoutActivations); ok is false for any other answer.
+func lfMapBack(in decision.Intent, back []int) (decision.Intent, bool) {
+	if in.Payment != nil || len(in.Choices) != 1 || in.Choices[0] < 0 || in.Choices[0] >= len(back) {
+		return in, false
+	}
+	in.Choices = []int{back[in.Choices[0]]}
+	return in, true
+}
+
+// lfOptionName is the name of the card option o names in engine e, "" when none.
+func lfOptionName(e *rules.Engine, o decision.Option) string {
+	if obj := e.G.Obj(o.Obj); obj != nil && obj.Card != nil && len(obj.Card.Faces) > 0 {
+		return obj.Card.Faces[0].Name
+	}
+	return ""
+}
+
+// lfLandPlay is the play of d's first offered land named name; Choices is
+// [-1] when none is offered.
+func lfLandPlay(e *rules.Engine, d *decision.Decision, name string) decision.Intent {
+	in := decision.Intent{Seq: d.Seq, Player: d.Player, Choices: []int{-1}}
+	for _, o := range d.Options {
+		if o.Kind == "play_land" && lfOptionName(e, o) == name {
+			in.Choices[0] = o.Index
+			break
+		}
+	}
+	return in
+}
+
+// lfInPlay reports whether player p controls a permanent named name.
+func lfInPlay(g *state.Game, p state.PlayerID, name string) bool {
+	for _, id := range g.Zone(state.ZBattlefield, p) {
+		if o := g.Obj(id); o != nil && o.Controller == p && o.Card != nil && len(o.Card.Faces) > 0 && o.Card.Faces[0].Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// colourLandWindow plays a mirror of Islands, Forests, Bears ({1}) and green,
+// a card whose cost needs {G}, with the plain bot, seat 0 playing Islands
+// only (its other land plays are replaced by an Island's, or by pass), until
+// seat 0's own first main phase with the stack empty and its land drop not
+// yet made, where it holds an Island, a Forest, a Bear and green, has an
+// Island untapped and no Forest in play, and the first land play offered is
+// an Island's. The engine is left at that decision with no payment plans
+// built. There the seat's auto-pay bot taps the Island by hand toward the
+// Bear (as at landTapWindow), and asked again without its mana activations
+// it plays the Forest: the land that covers green's unmet {G} (botpolicy's
+// chooseLand), not the first land offered.
+func colourLandWindow(t *testing.T, green *cards.Card) *rules.Engine {
+	t.Helper()
+	ctx := context.Background()
+	bear := payWindowCard(t, "Name:Bear\nManaCost:1\nTypes:Creature Bear\nPT:2/2\nOracle:x\n")
+	island := payWindowCard(t, "Name:Island\nTypes:Basic Land Island\nOracle:x\n")
+	forest := payWindowCard(t, "Name:Forest\nTypes:Basic Land Forest\nOracle:x\n")
+	gname := green.Faces[0].Name
+	var deck []*cards.Card
+	for i := 0; i < 8; i++ {
+		deck = append(deck, island, forest)
+	}
+	for i := 0; i < 4; i++ {
+		deck = append(deck, bear, green)
+	}
+	bot := payWindowSeat(t).def
+	for seed := uint64(1); seed < 200; seed++ {
+		e := rules.New(rules.Config{Seed: seed, Names: []string{"a", "b"}, Decks: [][]*cards.Card{deck, deck}})
+		e.Advance()
+		rngs := searchprobe.BotRandoms(seed, 2)
+		board := botpolicy.NewBoard(2)
+		for steps := 0; steps < 3000 && !e.G.Over; steps++ {
+			d := e.Pending()
+			if d.Player == 0 && d.Kind == decision.KPriority && e.G.Active == 0 && e.G.Step == state.StepMain1 &&
+				len(e.G.Stack) == 0 && e.G.Players[0].LandsPlayed == 0 && lfHolds(e.G, 0, "Island") && lfHolds(e.G, 0, "Forest") &&
+				lfHolds(e.G, 0, "Bear") && lfHolds(e.G, 0, gname) && !lfInPlay(e.G, 0, "Forest") && lfOption(d, "play_land") >= 0 &&
+				lfOptionName(e, d.Options[lfOption(d, "play_land")]) == "Island" && lfLandPlay(e, d, "Forest").Choices[0] >= 0 {
+				untapped := false
+				for _, id := range e.G.Zone(state.ZBattlefield, 0) {
+					if o := e.G.Obj(id); o != nil && !o.Tapped && o.Card == island {
+						untapped = true
+					}
+				}
+				tap, err := bot.DecideBoard(ctx, botpolicy.BoardFromGame(e.G, e, 0), *d)
+				without, back := withoutActivations(*d)
+				land, lerr := bot.DecideBoard(ctx, botpolicy.BoardFromGame(e.G, e, 0), without)
+				land, ok := lfMapBack(land, back)
+				if untapped && err == nil && lerr == nil && ok && priorityBase(d, tap) == BaseActivate &&
+					reflect.DeepEqual(land.Choices, lfLandPlay(e, d, "Forest").Choices) {
+					return e
+				}
+			}
+			in := botpolicy.Decide(botpolicy.BoardFromGameInto(e.G, e, d.Player, &board), d, rngs[d.Player])
+			if d.Player == 0 && priorityBase(d, in) == BasePlayLand && lfOptionName(e, d.Options[in.Choices[0]]) != "Island" {
+				if i := lfLandPlay(e, d, "Island").Choices[0]; i >= 0 {
+					in.Choices = []int{i}
+				} else if p := lfOption(d, "pass"); p >= 0 {
+					in.Choices = []int{p}
+				}
+			}
+			if err := e.Submit(in); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Fatal("no own main phase with an Island and a Forest to play, green's {G} unmet and the bot tapping, reached")
+	return nil
+}
+
+// The land the backstop plays first is the bot's own choice, read from the
+// seat's board (Root.BotAsk asks over env.Board): at colourLandWindow, with
+// an Island and a Forest offered (the Island first) and an Elf's {G} unmet,
+// the seat plays the Forest unsearched, where a bot that reads no board (no
+// hand, no lands in play) plays the first land offered, the Island.
+func TestAZPlaysTheBotsColourLandFirst(t *testing.T) {
+	ctx := context.Background()
+	e := colourLandWindow(t, payWindowCard(t, "Name:Elf\nManaCost:G\nTypes:Creature Elf\nPT:1/1\nOracle:x\n"))
+	d := *e.Pending()
+	board := botpolicy.NewBoard(2)
+	b := botpolicy.BoardFromGameInto(e.G, e, d.Player, &board)
+	forest, island := lfLandPlay(e, &d, "Forest"), lfLandPlay(e, &d, "Island")
+	without, back := withoutActivations(d)
+	blind, err := payWindowSeat(t).def.DecideBoard(ctx, botpolicy.NewBoard(2), without)
+	if blind, ok := lfMapBack(blind, back); err != nil || !ok || !reflect.DeepEqual(blind, island) {
+		t.Fatalf("a bot reading no board answered %s (%v), want the first land offered, %s", CandidateLabel(&d, blind), err, CandidateLabel(&d, island))
+	}
+	diags := watchDiags(t)
+	in, err := payWindowSeat(t).DecideSearch(ctx, searchseat.Env{Engine: e, Board: b}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*diags) != 1 {
+		t.Fatalf("%d diags", len(*diags))
+	}
+	if dg := (*diags)[0]; !reflect.DeepEqual(in, forest) || dg.Searched || dg.Stats.LandFirst != 1 || dg.Stats.BotTapRerooted != 0 {
+		t.Fatalf("played %s (searched %v, land first %d, tap rerooted %d), want %s unsearched",
+			CandidateLabel(&d, in), dg.Searched, dg.Stats.LandFirst, dg.Stats.BotTapRerooted, CandidateLabel(&d, forest))
+	}
+	t.Logf("seat 0's turn %d main 1: played %s, a bot reading no board %s", e.G.Turn, CandidateLabel(&d, in), CandidateLabel(&d, island))
+	if err := e.Submit(in); err != nil {
+		t.Fatal(err)
+	}
+	if e.G.Players[0].LandsPlayed != 1 || !lfInPlay(e.G, 0, "Forest") {
+		t.Fatalf("lands played %d, a Forest in play %v", e.G.Players[0].LandsPlayed, lfInPlay(e.G, 0, "Forest"))
 	}
 }

@@ -104,6 +104,63 @@ type azAgg struct {
 
 var azStats azAgg
 
+// watch is the az seats' azmcts.Watch during play: every root decision's Diag, summed into a.
+func (a *azAgg) watch(d azmcts.Diag) {
+	if d.Kind == "" {
+		return
+	}
+	a.asked.Add(1)
+	a.refused.Add(int64(d.Stats.RedealRefused))
+	if d.Refused != "" || d.DealFailed != "" {
+		noteRefusal(d.Refused, d.DealFailed)
+	}
+	a.noWorld.Add(int64(d.Stats.NoWorld))
+	a.allFailed.Add(int64(d.Stats.AllFailed))
+	a.priorFallbacks.Add(int64(d.Stats.PriorFallbacks))
+	a.botTapRerooted.Add(int64(d.Stats.BotTapRerooted))
+	a.landFirst.Add(int64(d.Stats.LandFirst))
+	a.topKPoints.Add(int64(d.Stats.PriorTopKPoints))
+	a.topKCuts.Add(int64(d.Stats.PriorTopKCuts))
+	a.topKBefore.Add(int64(d.Stats.PriorTopKBefore))
+	if d.Searched {
+		a.searched.Add(1)
+		a.sims.Add(int64(d.Stats.Completed))
+		a.msX1000.Add(int64(d.MS * 1000))
+		a.oppPoints.Add(int64(d.Stats.OppPoints))
+		a.oppExpanded.Add(int64(d.Stats.OppExpanded))
+		a.oppPayPoints.Add(int64(d.Stats.OppPayPoints))
+		if d.Cheap {
+			a.cheapSearched.Add(1)
+			a.cheapMsX1000.Add(int64(d.MS * 1000))
+		}
+		if d.Decided {
+			a.decidedSearched.Add(1)
+			a.decidedMsX1000.Add(int64(d.MS * 1000))
+		}
+		if d.Stats.ForcedSearched > 0 {
+			a.forcedSearched.Add(int64(d.Stats.ForcedSearched))
+			a.forcedSims.Add(int64(d.Stats.Completed))
+			a.forcedPlayouts.Add(int64(d.Stats.ForcedPlayouts))
+			a.prunedVisits.Add(int64(d.Stats.PrunedVisits))
+			a.prunedChildren.Add(int64(d.Stats.PrunedChildren))
+		}
+		for x := range a.extraSearched {
+			a.extraSearched[x].Add(int64(d.Stats.ExtraSearched[x]))
+			a.extraPoints[x].Add(int64(d.Stats.ExtraPoints[x]))
+		}
+	}
+}
+
+// tapSummary is the bot-tap backstop's part of play's summary.
+func (a *azAgg) tapSummary(sum map[string]any) {
+	// Searched decisions whose auto-pay bot answered a manual mana tap, searched with no bot candidate
+	// instead of played unsearched (azmcts Stats.BotTapRerooted; 0 under :manualtaps, near 0 is healthy).
+	sum["az_bot_tap_rerooted"] = a.botTapRerooted.Load()
+	// Decisions that would have been rerouted, whose bot played a land when asked again without its mana
+	// activations: the land drop is played first, unsearched (azmcts Stats.LandFirst; 0 under :manualtaps).
+	sum["az_land_first"] = a.landFirst.Load()
+}
+
 // refusals counts redeal refusals and deal failures by reason (-out summary).
 var refusals struct {
 	sync.Mutex
@@ -383,51 +440,7 @@ func runPlay(args []string) int {
 	}
 	t0 := time.Now()
 	azmcts.Millis = func() float64 { return float64(time.Since(t0).Microseconds()) / 1000 }
-	azmcts.Watch = func(d azmcts.Diag) {
-		if d.Kind == "" {
-			return
-		}
-		azStats.asked.Add(1)
-		azStats.refused.Add(int64(d.Stats.RedealRefused))
-		if d.Refused != "" || d.DealFailed != "" {
-			noteRefusal(d.Refused, d.DealFailed)
-		}
-		azStats.noWorld.Add(int64(d.Stats.NoWorld))
-		azStats.allFailed.Add(int64(d.Stats.AllFailed))
-		azStats.priorFallbacks.Add(int64(d.Stats.PriorFallbacks))
-		azStats.botTapRerooted.Add(int64(d.Stats.BotTapRerooted))
-		azStats.landFirst.Add(int64(d.Stats.LandFirst))
-		azStats.topKPoints.Add(int64(d.Stats.PriorTopKPoints))
-		azStats.topKCuts.Add(int64(d.Stats.PriorTopKCuts))
-		azStats.topKBefore.Add(int64(d.Stats.PriorTopKBefore))
-		if d.Searched {
-			azStats.searched.Add(1)
-			azStats.sims.Add(int64(d.Stats.Completed))
-			azStats.msX1000.Add(int64(d.MS * 1000))
-			azStats.oppPoints.Add(int64(d.Stats.OppPoints))
-			azStats.oppExpanded.Add(int64(d.Stats.OppExpanded))
-			azStats.oppPayPoints.Add(int64(d.Stats.OppPayPoints))
-			if d.Cheap {
-				azStats.cheapSearched.Add(1)
-				azStats.cheapMsX1000.Add(int64(d.MS * 1000))
-			}
-			if d.Decided {
-				azStats.decidedSearched.Add(1)
-				azStats.decidedMsX1000.Add(int64(d.MS * 1000))
-			}
-			if d.Stats.ForcedSearched > 0 {
-				azStats.forcedSearched.Add(int64(d.Stats.ForcedSearched))
-				azStats.forcedSims.Add(int64(d.Stats.Completed))
-				azStats.forcedPlayouts.Add(int64(d.Stats.ForcedPlayouts))
-				azStats.prunedVisits.Add(int64(d.Stats.PrunedVisits))
-				azStats.prunedChildren.Add(int64(d.Stats.PrunedChildren))
-			}
-			for x := range azStats.extraSearched {
-				azStats.extraSearched[x].Add(int64(d.Stats.ExtraSearched[x]))
-				azStats.extraPoints[x].Add(int64(d.Stats.ExtraPoints[x]))
-			}
-		}
-	}
+	azmcts.Watch = azStats.watch
 	outF, err := os.Create(*out)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -640,12 +653,7 @@ func runPlay(args []string) int {
 		sum["az_no_world_sims"] = azStats.noWorld.Load()
 		sum["az_all_failed"] = azStats.allFailed.Load()
 		sum["az_prior_fallbacks"] = azStats.priorFallbacks.Load()
-		// Searched decisions whose auto-pay bot answered a manual mana tap, searched with no bot candidate
-		// instead of played unsearched (azmcts Stats.BotTapRerooted; 0 under :manualtaps, near 0 is healthy).
-		sum["az_bot_tap_rerooted"] = azStats.botTapRerooted.Load()
-		// Decisions that would have been rerouted, whose bot played a land when asked again without its mana
-		// activations: the land drop is played first, unsearched (azmcts Stats.LandFirst; 0 under :manualtaps).
-		sum["az_land_first"] = azStats.landFirst.Load()
+		azStats.tapSummary(sum)
 		if r := refusalReasons(); len(r) > 0 {
 			// Why redeals refused or deals failed, by reason (numbers and names stripped).
 			sum["az_refusal_reasons"] = r
